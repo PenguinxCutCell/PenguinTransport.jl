@@ -13,8 +13,8 @@ function build_cut_moments()
 end
 
 function build_full_1d_moments(; nx=40)
-    x = collect(range(0.0, 1.0; length=nx + 1))
     full_domain(_x, _=0.0) = -1.0
+    x = collect(range(0.0, 1.0; length=nx + 1))
     return CartesianGeometry.geometric_moments(full_domain, (x,), Float64, zero; method=:implicitintegration)
 end
 
@@ -40,8 +40,14 @@ function build_cut_system(;
     return PenguinTransport.build_system(moments, prob)
 end
 
-function build_periodic_1d_system(; scheme=CartesianOperators.Upwind1(), vel=1.0, kappa=0.0)
-    moments = build_full_1d_moments()
+function build_periodic_1d_system(;
+    nx::Int=80,
+    scheme=CartesianOperators.Upwind1(),
+    vel=1.0,
+    kappa=0.0,
+    source=nothing,
+)
+    moments = build_full_1d_moments(; nx=nx)
     bc_adv = CartesianOperators.AdvBoxBC(
         (CartesianOperators.AdvPeriodic(Float64),),
         (CartesianOperators.AdvPeriodic(Float64),),
@@ -52,6 +58,7 @@ function build_periodic_1d_system(; scheme=CartesianOperators.Upwind1(), vel=1.0
         scheme=scheme,
         vel_omega=vel,
         vel_gamma=vel,
+        source=source,
     )
     return PenguinTransport.build_system(moments, prob)
 end
@@ -60,3 +67,9 @@ include("test_masking.jl")
 include("test_rhs.jl")
 include("test_updates_and_rebuild.jl")
 include("test_sciml_integration.jl")
+include("test_steady_solver.jl")
+include("test_validation_mass.jl")
+include("test_validation_order.jl")
+include("test_validation_boundedness.jl")
+include("test_validation_manufactured_advection_diffusion.jl")
+include("test_performance_rhs_allocations.jl")

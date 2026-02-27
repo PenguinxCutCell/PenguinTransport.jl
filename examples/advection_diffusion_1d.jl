@@ -37,15 +37,17 @@ prob = PenguinTransport.TransportProblem(;
 )
 sys = PenguinTransport.build_system(moments, prob)
 u0 = smooth_initial(moments, sys.dof_omega)
+dt = PenguinTransport.cfl_dt(sys, u0; cfl=0.45)
 
 odeprob = PenguinSolverCore.sciml_odeproblem(sys, u0, (0.0, 0.5); p=nothing)
 sol = SciMLBase.solve(odeprob, OrdinaryDiffEq.Rosenbrock23(autodiff=false);
-    reltol=1e-8,
-    abstol=1e-8,
+    adaptive=false,
+    dt=dt,
     saveat=0.5,
 )
 
 u_end = sol.u[end]
 println("1D advection-diffusion with kappa=0.01 at t=0.5")
+println("  CFL dt: ", dt)
 println("  Reduced-state norm: ", norm(u_end))
 println("  Mean value: ", sum(u_end) / length(u_end))

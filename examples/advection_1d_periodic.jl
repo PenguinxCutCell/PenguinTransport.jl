@@ -38,12 +38,13 @@ function solve_scheme(scheme)
     )
     sys = PenguinTransport.build_system(moments, prob)
     u0 = gaussian_on_active(moments, sys.dof_omega)
+    dt = PenguinTransport.cfl_dt(sys, u0; cfl=0.5)
     odeprob = PenguinSolverCore.sciml_odeproblem(sys, u0, (0.0, 0.3); p=nothing)
     sol = SciMLBase.solve(
         odeprob,
         OrdinaryDiffEq.Rosenbrock23(autodiff=false);
-        reltol=1e-7,
-        abstol=1e-7,
+        adaptive=false,
+        dt=dt,
         saveat=0.3,
     )
     return sys, sol.u[end]

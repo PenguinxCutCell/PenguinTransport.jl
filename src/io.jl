@@ -1,3 +1,10 @@
+"""
+    full_state(sys, u_omega)
+
+Reconstruct full-length `ω` and `γ` scalar fields from a reduced `ω` state.
+
+Returns `(Tω_full, Tγ_full)` as copies suitable for plotting/debug.
+"""
 function full_state(sys::TransportSystem{N,T}, u_omega::AbstractVector) where {N,T}
     nω = length(sys.dof_omega.indices)
     length(u_omega) == nω ||

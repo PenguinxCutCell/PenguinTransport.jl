@@ -1,11 +1,34 @@
+"""
+    KappaUpdater(f)
+
+Updater that sets `sys.kappa = f(...)` at scheduled times.
+Returns `:rhs_only`.
+"""
 mutable struct KappaUpdater{F} <: PenguinSolverCore.AbstractUpdater
     kappa_fun::F
 end
 
+"""
+    SchemeUpdater(f)
+
+Updater that sets `sys.scheme = f(...)` (`AdvectionScheme` expected).
+Returns `:rhs_only`.
+"""
 mutable struct SchemeUpdater{F} <: PenguinSolverCore.AbstractUpdater
     scheme_fun::F
 end
 
+"""
+    VelocityUpdater(f; which=:both)
+
+Updater for transport velocities.
+
+- `which=:omega`: update only `uω`.
+- `which=:gamma`: update only `uγ`.
+- `which=:both`: update both (payload may also be named tuple with `:omega/:gamma`).
+
+Returns `:rhs_only`.
+"""
 mutable struct VelocityUpdater{F} <: PenguinSolverCore.AbstractUpdater
     velocity_fun::F
     which::Symbol
@@ -13,10 +36,25 @@ end
 
 VelocityUpdater(f; which::Symbol=:both) = VelocityUpdater{typeof(f)}(f, which)
 
+"""
+    AdvBCUpdater(f)
+
+Updater for advection boundary conditions (`AdvBoxBC` payload).
+
+If periodicity changes, marks operators dirty and returns `:matrix` so rebuild is
+triggered. Otherwise returns `:rhs_only`.
+"""
 mutable struct AdvBCUpdater{F} <: PenguinSolverCore.AbstractUpdater
     bc_fun::F
 end
 
+"""
+    SourceUpdater(f)
+
+Updater for source specification. Payload can be `nothing`, a callable, or a
+fixed scalar/vector value (wrapped internally).
+Returns `:rhs_only`.
+"""
 mutable struct SourceUpdater{F} <: PenguinSolverCore.AbstractUpdater
     source_fun::F
 end

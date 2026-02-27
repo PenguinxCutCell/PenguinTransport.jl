@@ -1,0 +1,15 @@
+[deps]
+CartesianGeometry = "5961ddb3-e46d-41f1-806c-0197ba873d0b"
+CartesianOperators = "6ffd2c7a-1a34-4f8b-a2c9-3d5e7f9b0c1d"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
+OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
+PenguinSolverCore = "8f14e45f-7d0b-4a6b-9c1e-2f3d4b5a6c7d"
+PenguinTransport = "d3a1f7c2-9b5e-4f12-a6c3-7b9d2e1f0a4b"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+VOFTools = "f4b4545c-59ad-49ee-afe8-a74df8bf51d2"
+VofiJul = "e4b0aab4-58c8-425b-9d4c-54271c2045d0"
+Vofinit = "1beee101-8e09-4165-b3f9-a3e33534e38b"
+
+[compat]
+Documenter = "1"

@@ -1,3 +1,18 @@
+"""
+    TransportProblem(; kappa=0, bc_diff=nothing, bc_adv=nothing, scheme=Centered(),
+                       vel_omega=0, vel_gamma=vel_omega, source=nothing)
+
+User-facing specification for scalar transport:
+
+`M*Ṫ = C(uω, uγ; scheme)T + κΔ(Tω, Tγ) + S`.
+
+- `kappa`: scalar diffusivity (`0` gives pure advection).
+- `bc_diff`: diffusion boundary conditions (`BoxBC`); defaults to zero-Neumann.
+- `bc_adv`: advection boundary conditions (`AdvBoxBC`); defaults to outflow.
+- `scheme`: advection discretization (`Centered`, `Upwind1`, `MUSCL`).
+- `vel_omega`, `vel_gamma`: velocity payloads (scalar/tuple/vector/function).
+- `source`: optional source callback/payload.
+"""
 struct TransportProblem{K,BCD,BCA,SCH,VO,VG,SRC}
     kappa::K
     bc_diff::BCD
@@ -23,6 +38,14 @@ TransportProblem(; kappa=0.0,
     source=nothing,
 ) = TransportProblem(kappa, bc_diff, bc_adv, scheme, vel_omega, vel_gamma, source)
 
+"""
+    TransportSystem{N,T} <: PenguinSolverCore.AbstractSystem
+
+Semidiscrete transport system built by [`build_system`](@ref).
+
+The runtime state is reduced to active `ω` DOFs while full-length caches are kept
+internally for kernel operators and boundary-condition handling.
+"""
 mutable struct TransportSystem{N,T} <: PenguinSolverCore.AbstractSystem
     cache::PenguinSolverCore.InvalidationCache
     updates::PenguinSolverCore.UpdateManager

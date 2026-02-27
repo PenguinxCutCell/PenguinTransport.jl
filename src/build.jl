@@ -32,6 +32,19 @@ function _build_ops_adv(moments::CartesianGeometry.GeometricMoments{N,T}, bc_adv
     return ops_adv, bc_adv
 end
 
+"""
+    build_system(moments, prob; vtol=nothing)
+
+Build a [`TransportSystem`](@ref) from geometric moments and a [`TransportProblem`](@ref).
+
+Active `ω` DOFs are selected using:
+- material cells (`cell_type != 0`),
+- positive volume above `vtol`,
+- removal of padded boundary cells.
+
+Returns a system with reduced DOF map, diagonal mass matrix, kernel operators,
+and preallocated full/reduced work buffers.
+"""
 function build_system(
     moments::CartesianGeometry.GeometricMoments{N,T},
     prob::TransportProblem;
