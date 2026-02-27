@@ -32,6 +32,12 @@ julia --project examples/<file>.jl
 - 2D rotating velocity field.
 - Demonstrates full-domain transport setup in two dimensions.
 
+## `embedded_boundary_inflow_2d.jl`
+
+- Cut-cell geometry (`levelset != -1`) with a circular embedded boundary.
+- Demonstrates inflow-only interface closure: impose trace only where `u⋅n<0`.
+- Prints inflow/outflow interface counts and RHS norms with/without interface injection.
+
 ## `transport_diffusion_strang.jl`
 
 - Coupling sketch using Strang splitting:

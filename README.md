@@ -40,6 +40,7 @@ PenguinSolverCore.rhs!(du, sys, u0, nothing, 0.0)
 
 - Diffusion BC: `CartesianOperators.BoxBC` (`Dirichlet`, `Neumann`, `Periodic`) through kernel diffusion ops.
 - Advection BC: `CartesianOperators.AdvBoxBC` (`AdvPeriodic`, `AdvOutflow`, `AdvInflow`).
+- Embedded advection interface BC: `embedded_inflow` (inflow-only trace on cut-cell interface, active where `u⋅n<0`).
 - Advection schemes: `Centered()`, `Upwind1()`, `MUSCL(limiter)` (`Minmod`, `MC`, `VanLeer`).
 
 ## Example Snapshot
@@ -72,4 +73,5 @@ From `examples/advection_1d_periodic.jl` (Upwind1 vs MUSCL at `t=0.3`):
 - `examples/advection_1d_sine_convergence.jl` (analytical sine-wave order test, RK2, CFL=0.5)
 - `examples/advection_diffusion_1d.jl`
 - `examples/rotating_2d_transport.jl`
+- `examples/embedded_boundary_inflow_2d.jl`
 - `examples/transport_diffusion_strang.jl` (Strang splitting sketch)

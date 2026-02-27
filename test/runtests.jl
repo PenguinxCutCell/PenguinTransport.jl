@@ -24,6 +24,7 @@ function build_cut_system(;
     vel_omega=(0.0, 0.0),
     vel_gamma=vel_omega,
     source=nothing,
+    embedded_inflow=nothing,
     bc_adv=nothing,
     bc_diff=nothing,
 )
@@ -36,6 +37,7 @@ function build_cut_system(;
         vel_omega=vel_omega,
         vel_gamma=vel_gamma,
         source=source,
+        embedded_inflow=embedded_inflow,
     )
     return PenguinTransport.build_system(moments, prob)
 end
@@ -72,4 +74,5 @@ include("test_validation_mass.jl")
 include("test_validation_order.jl")
 include("test_validation_boundedness.jl")
 include("test_validation_manufactured_advection_diffusion.jl")
+include("test_embedded_inflow_bc.jl")
 include("test_performance_rhs_allocations.jl")

@@ -72,6 +72,7 @@ function build_system(
     ops_diff = CartesianOperators.kernel_ops(moments; bc=prob.bc_diff)
     ops_adv, bc_adv = _build_ops_adv(moments, prob.bc_adv)
     bc_diff = ops_diff.bc
+    embedded_bc = _normalize_embedded_inflow(prob.embedded_inflow, moments)
 
     prob.kappa isa Number || throw(ArgumentError("kappa must be a scalar diffusivity; got $(typeof(prob.kappa))"))
     kappa = convert(T, prob.kappa)
@@ -99,6 +100,7 @@ function build_system(
         prob.scheme,
         bc_diff,
         bc_adv,
+        embedded_bc,
         _adv_periodic_pattern(bc_adv),
         ops_diff,
         ops_adv,

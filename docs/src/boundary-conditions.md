@@ -40,3 +40,17 @@ The advection BC object is still passed to convection kernels to apply inflow/ou
 
 - If periodicity pattern changes, system marks operators dirty and triggers rebuild.
 - If periodicity is unchanged, update is `:rhs_only`.
+
+## Embedded Interface Inflow (Cut Cells)
+
+`TransportProblem` supports `embedded_inflow=...` for cut-cell advection.
+
+- This is an interface trace closure on the embedded boundary `Γ`, not a box-boundary condition.
+- The prescribed trace is imposed only on inflow interface segments (`u⋅n < 0`).
+- On outflow (`u⋅n >= 0`), no value is imposed and the interior trace is used.
+
+Accepted payloads:
+
+- scalar (`embedded_inflow=1.0`)
+- full `Nd` vector
+- callback returning scalar/vector, or callback that fills destination buffer in-place

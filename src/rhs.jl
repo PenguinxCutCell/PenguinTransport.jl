@@ -74,6 +74,9 @@ function PenguinSolverCore.rhs!(du, sys::TransportSystem{N,T}, u, p, t) where {N
             sys.Tγ_full,
             sys.work_adv;
             scheme=sys.scheme,
+            moments=sys.moments,
+            embedded_bc=sys.embedded_bc,
+            t=convert(T, t),
         )
     else
         adops = CartesianOperators.KernelAdvectionDiffusionOps(sys.ops_diff, sys.ops_adv, sys.kappa)
@@ -87,6 +90,9 @@ function PenguinSolverCore.rhs!(du, sys::TransportSystem{N,T}, u, p, t) where {N
             sys.work_diff,
             sys.work_adv;
             scheme=sys.scheme,
+            moments=sys.moments,
+            embedded_bc=sys.embedded_bc,
+            t=convert(T, t),
         )
     end
 

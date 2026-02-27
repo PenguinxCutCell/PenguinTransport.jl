@@ -83,6 +83,8 @@ function _steady_transport_raw_reduced!(
             sys.Tγ_full,
             sys.work_adv;
             scheme=sys.scheme,
+            moments=sys.moments,
+            embedded_bc=sys.embedded_bc,
         )
     else
         adops = CartesianOperators.KernelAdvectionDiffusionOps(sys.ops_diff, sys.ops_adv, sys.kappa)
@@ -96,6 +98,8 @@ function _steady_transport_raw_reduced!(
             sys.work_diff,
             sys.work_adv;
             scheme=sys.scheme,
+            moments=sys.moments,
+            embedded_bc=sys.embedded_bc,
         )
     end
 
