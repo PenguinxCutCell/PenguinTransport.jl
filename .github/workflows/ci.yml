@@ -1,4 +1,4 @@
-name: CI
+name: test
 
 on:
   push:
@@ -10,37 +10,44 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         julia: ["1"]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: julia-actions/setup-julia@v2
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v1
         with:
           version: ${{ matrix.julia }}
 
-      - uses: julia-actions/cache@v2
-
-      - name: Develop PenguinxCutCell packages
-        run: |
-          julia --project=. -e 'import Pkg; Pkg.develop([
-            Pkg.PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"),
-            Pkg.PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"),
-            Pkg.PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git"),
-          ]); Pkg.instantiate()'
-
-      - uses: julia-actions/julia-buildpkg@v1
-
-      - uses: julia-actions/julia-runtest@v1
+      - name: Cache Julia registries
+        uses: actions/cache@v4
         with:
-          coverage: true
+          path: |
+            ~/.julia/registries
+          key: ${{ runner.os }}-julia-registries-${{ hashFiles('**/Project.toml','**/Manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-registries-
 
-      - uses: julia-actions/julia-processcoverage@v1
-  
-      - uses: codecov/codecov-action@v5
+      - name: Cache Julia artifacts
+        uses: actions/cache@v4
         with:
-          files: lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          path: |
+            ~/.julia/artifacts
+          key: ${{ runner.os }}-julia-artifacts-${{ matrix.julia }}-${{ hashFiles('**/Project.toml','**/Manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-artifacts-${{ matrix.julia }}-
+
+      - name: Cache compiled packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.julia/compiled
+          key: ${{ runner.os }}-julia-compiled-${{ matrix.julia }}-${{ hashFiles('**/Project.toml','**/Manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-compiled-${{ matrix.julia }}-
+
+      - name: Install dependencies (including VofiJul), instantiate, and run tests
+        run: julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git")]); Pkg.instantiate(); Pkg.test()'
