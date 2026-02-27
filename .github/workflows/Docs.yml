@@ -38,16 +38,13 @@ jobs:
       - name: Instantiate docs environment
         run: |
           julia --project=docs -e '
-            using Pkg
-            repos = [
-              "PenguinxCutCell/PenguinSolverCore.jl",
-              "PenguinxCutCell/CartesianGeometry.jl",
-              "PenguinxCutCell/CartesianOperators.jl",
-            ]
-            for repo in repos
-              Pkg.develop(PackageSpec(url = "https://github.com/$repo"))
-            end
-            Pkg.develop(PackageSpec(path = pwd()))
+            using Pkg ;
+            Pkg.develop([
+            PackageSpec(url = "https://github.com/PenguinxCutCell/PenguinSolverCore.jl"),
+            PackageSpec(url = "https://github.com/PenguinxCutCell/CartesianGeometry.jl"),
+            PackageSpec(url = "https://github.com/PenguinxCutCell/CartesianOperators.jl"),
+            ]) ;
+            Pkg.develop(PackageSpec(path = pwd())) ; 
             Pkg.instantiate()
           '
 
