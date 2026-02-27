@@ -25,7 +25,7 @@ jobs:
 
       - name: Develop PenguinxCutCell packages
         run: |
-          julia -e 'import Pkg; Pkg.develop([
+          julia --project=. -e 'import Pkg; Pkg.develop([
             PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"),
             PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"),
             PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git"),
