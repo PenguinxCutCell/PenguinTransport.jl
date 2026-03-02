@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="360" viewBox="0 0 860 360">
+  <rect x="0" y="0" width="860" height="360" fill="#f8fafc"/>
+  <rect x="70" y="30" width="760" height="280" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+  <line x1="90" y1="290" x2="810" y2="290" stroke="#334155" stroke-width="2"/>
+  <line x1="90" y1="50" x2="90" y2="290" stroke="#334155" stroke-width="2"/>
+
+  <text x="430" y="25" text-anchor="middle" font-family="monospace" font-size="16" fill="#0f172a">
+    Periodic 1D Advection (t = 0.3): Upwind1 vs MUSCL
+  </text>
+  <text x="815" y="308" text-anchor="end" font-family="monospace" font-size="12" fill="#475569">x</text>
+  <text x="60" y="55" text-anchor="end" font-family="monospace" font-size="12" fill="#475569">T</text>
+
+  <polyline fill="none" stroke="#0284c7" stroke-width="3"
+    points="90,288 110,287 130,286 150,283 170,278 190,269 210,254 230,231 250,201 270,166 290,132 310,104 330,85 350,76 370,77 390,88 410,107 430,132 450,159 470,186 490,210 510,230 530,247 550,260 570,269 590,276 610,281 630,284 650,286 670,287 690,288 710,289 730,289 750,289 770,289 790,289"/>
+
+  <polyline fill="none" stroke="#16a34a" stroke-width="3" stroke-dasharray="7 5"
+    points="90,289 110,288 130,287 150,285 170,281 190,274 210,263 230,246 250,222 270,191 290,157 310,126 330,101 350,85 370,80 390,86 410,102 430,126 450,154 470,183 490,210 510,234 530,253 550,267 570,276 590,282 610,286 630,288 650,289 670,290 690,290 710,290 730,290 750,290 770,290 790,290"/>
+
+  <rect x="585" y="58" width="220" height="62" fill="#ffffff" stroke="#cbd5e1"/>
+  <line x1="600" y1="78" x2="660" y2="78" stroke="#0284c7" stroke-width="3"/>
+  <text x="670" y="82" font-family="monospace" font-size="13" fill="#0f172a">Upwind1</text>
+  <line x1="600" y1="101" x2="660" y2="101" stroke="#16a34a" stroke-width="3" stroke-dasharray="7 5"/>
+  <text x="670" y="105" font-family="monospace" font-size="13" fill="#0f172a">MUSCL (MC)</text>
+</svg>
