@@ -12,13 +12,6 @@ makedocs(
     ),
     pages = [
         "Home" => "index.md",
-        "Equations" => "equations.md",
-        "Boundary Conditions" => "boundary-conditions.md",
-        "Numerics" => "numerics.md",
-        "API Reference" => "api.md",
-        "Examples" => "examples.md",
-        "Validation" => "validation.md",
-        "Design Notes" => "design.md",
     ],
     pagesonly = true,
     warnonly = false,
