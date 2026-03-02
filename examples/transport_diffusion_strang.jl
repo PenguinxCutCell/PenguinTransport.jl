@@ -42,15 +42,43 @@ function build_diffusion_system(moments; kappa=0.01)
     return PenguinTransport.build_system(moments, prob)
 end
 
-function gaussian_on_active(moments, dof_omega; x0=0.2, sigma=0.06)
+function sine_on_active(moments, dof_omega; mean=0.6, amp=0.35)
     xcells = moments.xyz[1]
     u0 = zeros(Float64, length(dof_omega.indices))
     @inbounds for i in eachindex(dof_omega.indices)
         idx = dof_omega.indices[i]
-        xc = xcells[idx]
-        u0[i] = exp(-((xc - x0)^2) / (2 * sigma^2))
+        x = xcells[idx]
+        u0[i] = mean + amp * sin(2pi * x)
     end
     return u0
+end
+
+function exact_sine_advection_diffusion(moments, dof_omega; t, vel, kappa, mean=0.6, amp=0.35)
+    xcells = moments.xyz[1]
+    decay = exp(-4pi^2 * kappa * t)
+    uex = zeros(Float64, length(dof_omega.indices))
+    @inbounds for i in eachindex(dof_omega.indices)
+        idx = dof_omega.indices[i]
+        x = xcells[idx]
+        uex[i] = mean + amp * decay * sin(2pi * (x + vel * t))
+    end
+    return uex
+end
+
+function weighted_errors(sys, u_num, u_ex)
+    idx = sys.dof_omega.indices
+    V = sys.moments.V
+    num = 0.0
+    den = 0.0
+    linf = 0.0
+    @inbounds for i in eachindex(idx)
+        w = V[idx[i]]
+        e = u_num[i] - u_ex[i]
+        num += w * e * e
+        den += w * u_ex[i] * u_ex[i]
+        linf = max(linf, abs(e))
+    end
+    return sqrt(num / max(den, eps(Float64))), linf
 end
 
 function step_subproblem(sys, u, t0, dt)
@@ -66,11 +94,13 @@ function step_subproblem(sys, u, t0, dt)
 end
 
 function main()
+    vel = 1.0
+    kappa = 0.01
     moments = periodic_1d_moments()
-    sys_adv = build_advection_system(moments; vel=1.0)
-    sys_dif = build_diffusion_system(moments; kappa=0.01)
+    sys_adv = build_advection_system(moments; vel=vel)
+    sys_dif = build_diffusion_system(moments; kappa=kappa)
 
-    u = gaussian_on_active(moments, sys_adv.dof_omega)
+    u = sine_on_active(moments, sys_adv.dof_omega)
     dt = min(
         PenguinTransport.cfl_dt(sys_adv, u; cfl=0.45, include_diffusion=false),
         PenguinTransport.cfl_dt(sys_dif, u; cfl=0.45, include_diffusion=true),
@@ -87,9 +117,13 @@ function main()
         t += dt
     end
 
-    println("Transport + diffusion Strang splitting")
+    u_ex = exact_sine_advection_diffusion(moments, sys_adv.dof_omega; t=tf, vel=vel, kappa=kappa)
+    l2rel, linf = weighted_errors(sys_adv, u, u_ex)
+
+    println("Transport + diffusion Strang splitting (analytic check)")
     println("  dt = ", dt, ", nsteps = ", nsteps)
-    println("  Final reduced-state norm: ", norm(u))
+    println("  L2(rel) error: ", l2rel)
+    println("  Linf error   : ", linf)
 end
 
 main()

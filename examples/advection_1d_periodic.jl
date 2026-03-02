@@ -23,7 +23,38 @@ function gaussian_on_active(moments, dof_omega; x0=0.25, sigma=0.06)
     return u0
 end
 
-function solve_scheme(scheme)
+@inline periodic_dist(x::Float64, c::Float64) = abs(mod(x - c + 0.5, 1.0) - 0.5)
+
+function exact_gaussian_advected(moments, dof_omega; vel::Float64, t::Float64, x0::Float64, sigma::Float64)
+    xcells = moments.xyz[1]
+    uex = zeros(Float64, length(dof_omega.indices))
+    @inbounds for i in eachindex(dof_omega.indices)
+        idx = dof_omega.indices[i]
+        x = xcells[idx] + vel * t
+        d = periodic_dist(x, x0)
+        uex[i] = exp(-(d^2) / (2 * sigma^2))
+    end
+    return uex
+end
+
+function weighted_errors(sys, u_num, u_ex)
+    idx = sys.dof_omega.indices
+    V = sys.moments.V
+    num = 0.0
+    den = 0.0
+    linf = 0.0
+    @inbounds for i in eachindex(idx)
+        w = V[idx[i]]
+        e = u_num[i] - u_ex[i]
+        num += w * e * e
+        den += w * u_ex[i] * u_ex[i]
+        linf = max(linf, abs(e))
+    end
+    l2rel = sqrt(num / max(den, eps(Float64)))
+    return l2rel, linf
+end
+
+function solve_scheme(scheme; vel=1.0, tf=0.3, x0=0.25, sigma=0.06)
     moments = periodic_1d_moments()
     bc_adv = CartesianOperators.AdvBoxBC(
         (CartesianOperators.AdvPeriodic(Float64),),
@@ -33,31 +64,36 @@ function solve_scheme(scheme)
         kappa=0.0,
         bc_adv=bc_adv,
         scheme=scheme,
-        vel_omega=1.0,
-        vel_gamma=1.0,
+        vel_omega=vel,
+        vel_gamma=vel,
     )
     sys = PenguinTransport.build_system(moments, prob)
-    u0 = gaussian_on_active(moments, sys.dof_omega)
+    u0 = gaussian_on_active(moments, sys.dof_omega; x0=x0, sigma=sigma)
     dt = PenguinTransport.cfl_dt(sys, u0; cfl=0.5)
-    odeprob = PenguinSolverCore.sciml_odeproblem(sys, u0, (0.0, 0.3); p=nothing)
+    odeprob = PenguinSolverCore.sciml_odeproblem(sys, u0, (0.0, tf); p=nothing)
     sol = SciMLBase.solve(
         odeprob,
         OrdinaryDiffEq.Rosenbrock23(autodiff=false);
         adaptive=false,
         dt=dt,
-        saveat=0.3,
+        saveat=tf,
     )
-    return sys, sol.u[end]
+    u_num = sol.u[end]
+    u_ex = exact_gaussian_advected(moments, sys.dof_omega; vel=vel, t=tf, x0=x0, sigma=sigma)
+    l2rel, linf = weighted_errors(sys, u_num, u_ex)
+    return sys, u_num, u_ex, l2rel, linf
 end
 
-sys_up, u_up = solve_scheme(CartesianOperators.Upwind1())
-sys_mu, u_mu = solve_scheme(CartesianOperators.MUSCL(CartesianOperators.Minmod()))
+tf = 0.3
+sys_up, u_up, uex, l2_up, linf_up = solve_scheme(CartesianOperators.Upwind1(); tf=tf)
+sys_mu, u_mu, _, l2_mu, linf_mu = solve_scheme(CartesianOperators.MUSCL(CartesianOperators.Minmod()); tf=tf)
 
-println("Periodic 1D advection at t=0.3")
-println("  Upwind1 mass-weighted norm: ", norm(u_up))
-println("  MUSCL   mass-weighted norm: ", norm(u_mu))
-println("  Difference norm (MUSCL - Upwind1): ", norm(u_mu - u_up))
+println("Periodic 1D advection at t=$tf")
+println("  Upwind1: L2(rel) = $l2_up, Linf = $linf_up")
+println("  MUSCL  : L2(rel) = $l2_mu, Linf = $linf_mu")
+println("  ||MUSCL - Upwind1||2: ", norm(u_mu - u_up))
 
 Tω_up, _ = PenguinTransport.full_state(sys_up, u_up)
 Tω_mu, _ = PenguinTransport.full_state(sys_mu, u_mu)
+println("  Sample exact/reduced (idx 10): exact=$(uex[10]), Upwind1=$(u_up[10]), MUSCL=$(u_mu[10])")
 println("  Full-state sample (cell 10): Upwind1=$(Tω_up[10]), MUSCL=$(Tω_mu[10])")

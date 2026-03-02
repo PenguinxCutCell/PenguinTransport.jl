@@ -67,6 +67,13 @@ function build_system(
     isempty(omega_active) && throw(ArgumentError("no active omega DOFs after masking (cell_type/V/padding)"))
     dof_omega = PenguinSolverCore.DofMap(omega_active)
 
+    Iγ = T.(moments.interface_measure)
+    maxIγ = maximum(abs, Iγ; init=zero(T))
+    igamma_tol = sqrt(eps(T)) * maxIγ
+    gamma_mask = omega_mask .& (Iγ .> igamma_tol)
+    gamma_active = findall(gamma_mask)
+    dof_gamma = PenguinSolverCore.DofMap(gamma_active)
+
     M = spdiagm(0 => V[dof_omega.indices])
 
     ops_diff = CartesianOperators.kernel_ops(moments; bc=prob.bc_diff)
@@ -95,6 +102,7 @@ function build_system(
         PenguinSolverCore.UpdateManager(),
         moments,
         dof_omega,
+        dof_gamma,
         M,
         kappa,
         prob.scheme,

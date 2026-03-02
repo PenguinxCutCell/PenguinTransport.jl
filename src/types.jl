@@ -56,6 +56,7 @@ mutable struct TransportSystem{N,T} <: PenguinSolverCore.AbstractSystem
 
     moments::CartesianGeometry.GeometricMoments{N,T}
     dof_omega::PenguinSolverCore.DofMap{Int}
+    dof_gamma::PenguinSolverCore.DofMap{Int}
     M::SparseMatrixCSC{T,Int}
 
     kappa::T
