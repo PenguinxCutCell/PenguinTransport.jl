@@ -50,4 +50,4 @@ jobs:
             ${{ runner.os }}-julia-compiled-${{ matrix.julia }}-
 
       - name: Install dependencies (including VofiJul), instantiate, and run tests
-        run: julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/VofiJul.jl.git")]); Pkg.instantiate(); Pkg.test()'
+        run: julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/VofiJul.jl.git"), PackageSpec(url="https://github.com/PenguinxCutCell/VOFTools.jl.git")]); Pkg.instantiate(); Pkg.test()'
