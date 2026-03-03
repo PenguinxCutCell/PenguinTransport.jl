@@ -1,44 +1,41 @@
 # PenguinTransport.jl
 
-[![CI](https://github.com/PenguinxCutCell/PenguinTransport.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/PenguinxCutCell/PenguinTransport.jl/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/PenguinxCutCell/PenguinTransport.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/PenguinxCutCell/PenguinTransport.jl)
+`PenguinTransport.jl` provides cut-cell scalar transport tools for Cartesian grids.
 
-`PenguinTransport.jl` is a cut-cell scalar transport package built on:
-- `CartesianGeometry.jl`
-- `CartesianOperators.jl`
-- `PenguinBCs.jl`
-- `PenguinSolverCore.jl`
+## Documentation Pages
+
+- [Docstrings](docstrings.md)
+- [API](api.md)
+- [Reference](reference.md)
 
 ## Governing Equation
 
-The package targets scalar transport in conservative form:
-
-$$
+```math
 \frac{\partial \phi}{\partial t} + \nabla \cdot (\mathbf{u}\,\phi) = s
-$$
+```
 
-For steady problems:
+Steady form:
 
-$$
+```math
 \nabla \cdot (\mathbf{u}\,\phi) = s
-$$
+```
 
-## Numerical Schemes
+## Schemes Used
 
-Spatial advection discretization:
+Spatial advection schemes:
 - `Centered()`
 - `Upwind1()`
 
-Time integration for unsteady solves (`solve_unsteady!`):
-- `:BE` (Backward Euler, $\theta = 1$)
-- `:CN` (Crank-Nicolson, $\theta = 1/2$)
-- numeric `theta` values are also accepted
+Unsteady time schemes in `solve_unsteady!`:
+- `:BE` (Backward Euler, `theta = 1`)
+- `:CN` (Crank-Nicolson, `theta = 1/2`)
+- numeric `theta` values are accepted
 
 ## Embedded Interface Convention
 
-- Outer box boundaries use advection BC types (`Inflow`, `Outflow`, `Periodic`).
-- Embedded interface (`Γ`) is treated as no-flow by prescribing interface velocity with zero normal flux.
-- In practice for current monophasic runs, set interface velocity components to zero (`uγ = 0`), e.g. in 2D: `uγ = (zeros(nt), zeros(nt))`.
+- Outer box boundaries use advection boundary conditions (`Inflow`, `Outflow`, `Periodic`).
+- Embedded interface `Γ` is handled in no-flow mode (`u·n=0`) by setting interface velocity to zero.
+- In 2D examples/tests this is given by `uγ = (zeros(nt), zeros(nt))`.
 
 ## Feature Status
 
@@ -51,14 +48,24 @@ Time integration for unsteady solves (`solve_unsteady!`):
 | Time scheme | Backward Euler | Implemented | `scheme=:BE` |
 | Time scheme | Crank-Nicolson | Implemented | `scheme=:CN` |
 | Time scheme | Generic theta method | Implemented | Numeric `scheme` accepted as `theta` |
-| Source term | Constant or callable source | Implemented | scalar/callback `(x...)` or `(x..., t)` |
-| Outer BCs | Inflow / Outflow / Periodic | Implemented | Handled through `PenguinBCs.jl` border conditions |
+| Outer BCs | Inflow / Outflow / Periodic | Implemented | Through `PenguinBCs.jl` border conditions |
 | Embedded interface BC | No-flow boundary (`u·n=0` on `Γ`) | Implemented | Use zero interface velocity input (`uγ = 0`) |
 | Embedded interface BC | Embedded inflow/outflow scalar imposition | Not supported | Inflow/outflow BCs are only for outer box boundaries |
 
 ## Current Limitation
 
 - Embedded inflow/outflow scalar boundary conditions on `Γ` are not supported; embedded-interface mode is no-flow (`u·n=0`).
+
+## Public API
+
+Main exported interface:
+- `TransportModelMono`
+- `assemble_steady_mono!`
+- `assemble_unsteady_mono!`
+- `solve_steady!`
+- `solve_unsteady!`
+- `update_advection_ops!`
+- `rebuild!`
 
 ## Installation
 
@@ -67,7 +74,7 @@ using Pkg
 Pkg.add(url="https://github.com/PenguinxCutCell/PenguinTransport.jl")
 ```
 
-## Quick Start
+## Minimal Usage
 
 ```julia
 using PenguinTransport
@@ -91,14 +98,12 @@ result = solve_unsteady!(model, zeros(nt), (0.0, 1.0); dt=0.01, scheme=:CN)
 
 ## Examples
 
-See runnable scripts in `examples/`:
+Example scripts are available in `examples/`:
 - `smooth_blob_translation.jl`
 - `sharp_peak_advection.jl`
 - `manufactured_solution.jl`
 
-## Documentation
-
-Local docs are built with Documenter.jl from the `docs/` folder:
+## Build Docs
 
 ```bash
 julia --project=docs docs/make.jl

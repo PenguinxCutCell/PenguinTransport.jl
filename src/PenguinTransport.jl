@@ -260,7 +260,10 @@ function _cell_activity_masks(cap::AssembledCapacity{N,T}) where {N,T}
 	return activeω, activeγ
 end
 
-function _mono_row_activity(cap::AssembledCapacity{N,T}, lay) where {N,T}
+function _mono_row_activity(
+	cap::AssembledCapacity{N,T},
+	lay,
+) where {N,T}
 	activeω, activeγ = _cell_activity_masks(cap)
 	nsys = maximum((last(lay.ω), last(lay.γ)))
 	active = falses(nsys)
@@ -269,6 +272,13 @@ function _mono_row_activity(cap::AssembledCapacity{N,T}, lay) where {N,T}
 		active[lay.γ[i]] = activeγ[i]
 	end
 	return active
+end
+
+function _validate_mono_layout(cap::AssembledCapacity, lay)
+	nt = cap.ntotal
+	length(lay.ω) == nt || throw(ArgumentError("layout ω length ($(length(lay.ω))) must match cap.ntotal ($nt)"))
+	length(lay.γ) == nt || throw(ArgumentError("layout γ length ($(length(lay.γ))) must match cap.ntotal ($nt)"))
+	return nothing
 end
 
 function _interface_closure(
@@ -407,6 +417,7 @@ end
 function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N,T}, t::T) where {N,T}
 	nt = model.cap.ntotal
 	lay = model.layout.offsets
+	_validate_mono_layout(model.cap, lay)
 	nsys = maximum((last(lay.ω), last(lay.γ)))
 
 	ops, uωv, uγv = _ops_for_time(model, t)
@@ -417,9 +428,9 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 
 	fω = _source_values_mono(model.cap, model.source, t)
 	b1 = model.cap.V * fω
+	A21, A22, b2 = _interface_closure(model, uγv, t)
 	A11 = conv_bulk + conv_iface
 	A12 = conv_iface
-	A21, A22, b2 = _interface_closure(model, uγv, t)
 
 	A, b = if _is_canonical_mono_layout(lay, nt)
 		([A11 A12; A21 A22], vcat(b1, b2))
@@ -487,6 +498,7 @@ function assemble_unsteady_mono!(
 	assemble_steady_mono!(sys, model, t + θ * dt)
 
 	lay = model.layout.offsets
+	_validate_mono_layout(model.cap, lay)
 	nt = model.cap.ntotal
 	nsys = maximum((last(lay.ω), last(lay.γ)))
 

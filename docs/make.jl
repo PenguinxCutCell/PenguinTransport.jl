@@ -12,6 +12,9 @@ makedocs(
     ),
     pages = [
         "Home" => "index.md",
+        "Docstrings" => "docstrings.md",
+        "API" => "api.md",
+        "Reference" => "reference.md",
     ],
     pagesonly = true,
     warnonly = false,

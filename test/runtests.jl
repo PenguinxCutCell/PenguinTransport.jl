@@ -70,38 +70,39 @@ end
     @test norm(u_pos - u_neg, 2) > 1e-3
 end
 
-@testset "Embedded interface inflow/outflow closure" begin
+@testset "Embedded interface no-flow closure" begin
     grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
     cap = assembled_capacity(circle_moments(grid); bc=0.0)
     nt = cap.ntotal
     lay = layout_mono(nt).offsets
 
-    ncomp = ntuple(d -> [cap.n_γ[i][d] for i in 1:nt], 2)
+    zγ = (zeros(nt), zeros(nt))
     zω = (zeros(nt), zeros(nt))
 
-    model_out = TransportModelMono(cap, zω, ncomp; bc_interface=3.0)
-    sys_out = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
-    assemble_steady_mono!(sys_out, model_out, 0.0)
+    model_a = TransportModelMono(cap, zω, zγ; bc_interface=2.5)
+    sys_a = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+    assemble_steady_mono!(sys_a, model_a, 0.0)
+
+    model_b = TransportModelMono(cap, zω, zγ; bc_interface=-3.0)
+    sys_b = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+    assemble_steady_mono!(sys_b, model_b, 0.0)
 
     iface = findall(i -> cap.buf.Γ[i] > 0, 1:nt)
     @test !isempty(iface)
     for i in iface
         r = lay.γ[i]
         γ = cap.buf.Γ[i]
-        @test sys_out.A[r, lay.γ[i]] ≈ γ atol=1e-10
-        @test sys_out.A[r, lay.ω[i]] ≈ -γ atol=1e-10
+        @test sys_a.A[r, lay.γ[i]] ≈ γ atol=1e-12
+        @test sys_a.A[r, lay.ω[i]] ≈ -γ atol=1e-12
+        @test sys_a.b[r] ≈ 0.0 atol=1e-12
+
+        @test sys_b.A[r, lay.γ[i]] ≈ γ atol=1e-12
+        @test sys_b.A[r, lay.ω[i]] ≈ -γ atol=1e-12
+        @test sys_b.b[r] ≈ 0.0 atol=1e-12
     end
 
-    model_in = TransportModelMono(cap, zω, ntuple(d -> -ncomp[d], 2); bc_interface=2.5)
-    sys_in = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
-    assemble_steady_mono!(sys_in, model_in, 0.0)
-    for i in iface
-        r = lay.γ[i]
-        γ = cap.buf.Γ[i]
-        @test sys_in.A[r, lay.γ[i]] ≈ γ atol=1e-10
-        @test sys_in.A[r, lay.ω[i]] ≈ 0.0 atol=1e-10
-        @test sys_in.b[r] ≈ γ * 2.5 atol=1e-10
-    end
+    @test norm(sys_a.A - sys_b.A) ≤ 1e-12
+    @test norm(sys_a.b - sys_b.b) ≤ 1e-12
 end
 
 @testset "Masking and inactive-row identity" begin
@@ -109,7 +110,7 @@ end
     cap = assembled_capacity(circle_moments(grid; r=0.35, cx=0.25, cy=0.25); bc=0.0)
     nt = cap.ntotal
     lay = layout_mono(nt).offsets
-    model = TransportModelMono(cap, (ones(nt), ones(nt)), (ones(nt), ones(nt)); bc_interface=1.0)
+    model = TransportModelMono(cap, (ones(nt), ones(nt)), (zeros(nt), zeros(nt)); bc_interface=1.0)
 
     sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
     assemble_unsteady_mono!(sys, model, zeros(nt), 0.0, 0.1, :BE)
