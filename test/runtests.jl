@@ -245,7 +245,7 @@ end
         mass0 = _total_mass(cap, omega_view(m, r.states[1]))
         for st in r.states
             mass_t = _total_mass(cap, omega_view(m, st))
-            @test abs(mass_t - mass0) / abs(mass0) < 0.02   # <2 % relative drift
+            @test abs(mass_t - mass0) / abs(mass0) < 1e-10 # machine precision for periodic BCs
         end
     end
 end
@@ -276,7 +276,8 @@ end
 
         bc = BorderConditions(; left=Periodic(), right=Periodic(), bottom=Periodic(), top=Periodic())
         T_rev = 2π
-        dt = 0.5 * dx / (maximum(abs.(ux)) + maximum(abs.(uy)) + 1e-12)
+        umax = maximum(filter(isfinite, abs.(ux))) + maximum(filter(isfinite, abs.(uy)))
+        dt = 0.5 * dx / (umax + 1e-12)
 
         m = TransportModelMono(cap, (ux, uy), (ux, uy); bc_border=bc, scheme=Upwind1())
         r = solve_unsteady!(m, u0, (0.0, T_rev); dt=dt, scheme=:BE, save_history=false)
