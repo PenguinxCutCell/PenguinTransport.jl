@@ -39,7 +39,17 @@ jobs:
         run: |
           julia --project=docs -e '
             using Pkg
-            Pkg.develop([PackageSpec(path="https://github.com/PenguinxCutCell/CartesianGeometry.jl"), PackageSpec(path="https://github.com/PenguinxCutCell/CartesianOperators.jl"), PackageSpec(path="https://github.com/PenguinxCutCell/PenguinSolverCore.jl"),  PackageSpec(url="https://github.com/PenguinxCutCell/VofiJul.jl.git"),  PackageSpec(url="https://github.com/PenguinxCutCell/VOFTools.jl.git"), PackageSpec(path=pwd())])
+            Pkg.develop([
+              PackageSpec(url="https://github.com/PenguinxCutCell/Vofinit.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/VOFTools.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/VofiJul.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGeometry.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/CartesianOperators.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/PenguinSolverCore.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/PenguinBCs.jl.git"),
+              PackageSpec(url="https://github.com/PenguinxCutCell/CartesianGrids.jl.git"),
+              PackageSpec(path=pwd())
+            ])
             Pkg.instantiate()'
 
       - name: Build and deploy docs
