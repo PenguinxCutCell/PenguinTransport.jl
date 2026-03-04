@@ -37,8 +37,10 @@ Time integration for unsteady solves (`solve_unsteady!`):
 ## Embedded Interface Convention
 
 - Outer box boundaries use advection BC types (`Inflow`, `Outflow`, `Periodic`).
-- Embedded interface (`Γ`) is treated as no-flow by prescribing interface velocity with zero normal flux.
-- In practice for current monophasic runs, set interface velocity components to zero (`uγ = 0`), e.g. in 2D: `uγ = (zeros(nt), zeros(nt))`.
+- Embedded interface (`Γ`) uses sign-based closure with `s = u_\gamma \cdot n_\gamma`:
+  - if `s < 0` and `bc_interface` provides a value, inflow Dirichlet is imposed on interface unknowns (`Tγ = g`),
+  - otherwise (`s >= 0`, or no inflow value provided), continuity closure is used (`Tγ = Tω`).
+- No-flow interface mode is recovered by setting interface velocity to zero (`uγ = 0`), e.g. in 2D: `uγ = (zeros(nt), zeros(nt))`.
 
 ## Feature Status
 
@@ -54,11 +56,11 @@ Time integration for unsteady solves (`solve_unsteady!`):
 | Source term | Constant or callable source | Implemented | scalar/callback `(x...)` or `(x..., t)` |
 | Outer BCs | Inflow / Outflow / Periodic | Implemented | Handled through `PenguinBCs.jl` border conditions |
 | Embedded interface BC | No-flow boundary (`u·n=0` on `Γ`) | Implemented | Use zero interface velocity input (`uγ = 0`) |
-| Embedded interface BC | Embedded inflow/outflow scalar imposition | Not supported | Inflow/outflow BCs are only for outer box boundaries |
+| Embedded interface BC | Embedded inflow/outflow scalar imposition | Implemented | Sign-based on `uγ·nγ`: inflow uses `bc_interface`, else continuity |
 
 ## Current Limitation
 
-- Embedded inflow/outflow scalar boundary conditions on `Γ` are not supported; embedded-interface mode is no-flow (`u·n=0`).
+- Two-phase transport model is not yet implemented.
 
 ## Installation
 
@@ -95,6 +97,7 @@ See runnable scripts in `examples/`:
 - `smooth_blob_translation.jl`
 - `sharp_peak_advection.jl`
 - `manufactured_solution.jl`
+- `embedded_interface_bc_validation.jl`
 
 ## Documentation
 

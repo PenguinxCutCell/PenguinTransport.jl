@@ -105,6 +105,83 @@ end
     @test norm(sys_a.b - sys_b.b) ≤ 1e-12
 end
 
+@testset "Embedded interface sign-based inflow/outflow BC" begin
+    grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
+    cap = assembled_capacity(circle_moments(grid); bc=0.0)
+    nt = cap.ntotal
+    lay = layout_mono(nt).offsets
+
+    zω = (zeros(nt), zeros(nt))
+    uγ = (ones(nt), zeros(nt))
+    g = 2.5
+
+    model = TransportModelMono(cap, zω, uγ; bc_interface=Inflow(g), scheme=Centered())
+    sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+    assemble_steady_mono!(sys, model, 0.0)
+
+    n_in = 0
+    n_out = 0
+    for i in 1:nt
+        Γ = cap.buf.Γ[i]
+        (isfinite(Γ) && Γ > 0) || continue
+        s = uγ[1][i] * cap.n_γ[i][1] + uγ[2][i] * cap.n_γ[i][2]
+        r = lay.γ[i]
+        if s < 0
+            n_in += 1
+            @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-12
+            @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+            @test sys.b[r] ≈ Γ * g atol=1e-12
+        else
+            n_out += 1
+            @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
+            @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+            @test sys.b[r] ≈ 0.0 atol=1e-12
+        end
+    end
+
+    @test n_in > 0
+    @test n_out > 0
+end
+
+@testset "Embedded interface no inflow value => continuity closure" begin
+    grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
+    cap = assembled_capacity(circle_moments(grid); bc=0.0)
+    nt = cap.ntotal
+    lay = layout_mono(nt).offsets
+
+    zω = (zeros(nt), zeros(nt))
+    uγ = (ones(nt), zeros(nt))
+    model = TransportModelMono(cap, zω, uγ; bc_interface=nothing, scheme=Centered())
+    sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+    assemble_steady_mono!(sys, model, 0.0)
+
+    n_iface = 0
+    for i in 1:nt
+        Γ = cap.buf.Γ[i]
+        (isfinite(Γ) && Γ > 0) || continue
+        n_iface += 1
+        r = lay.γ[i]
+        @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
+        @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+        @test sys.b[r] ≈ 0.0 atol=1e-12
+    end
+
+    @test n_iface > 0
+end
+
+@testset "Time-dependent embedded inflow disables constant reuse" begin
+    grid = (0.0:0.2:1.0, 0.0:0.2:1.0)
+    cap = assembled_capacity(circle_moments(grid); bc=0.0)
+    nt = cap.ntotal
+
+    uω = (zeros(nt), zeros(nt))
+    uγ = (ones(nt), zeros(nt))
+    bc = BorderConditions(; left=Outflow(), right=Outflow(), bottom=Outflow(), top=Outflow())
+    model = TransportModelMono(cap, uω, uγ; bc_border=bc, bc_interface=Inflow((x, y, t) -> 1 + t), scheme=Centered())
+    res = solve_unsteady!(model, zeros(nt), (0.0, 0.2); dt=0.1, scheme=:BE, save_history=false)
+    @test res.reused_constant_operator == false
+end
+
 @testset "Masking and inactive-row identity" begin
     grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
     cap = assembled_capacity(circle_moments(grid; r=0.35, cx=0.25, cy=0.25); bc=0.0)

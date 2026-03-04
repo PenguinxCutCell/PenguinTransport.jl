@@ -26,7 +26,10 @@ Temporal integration in `solve_unsteady!`:
 ## Embedded Interface Convention
 
 - Outer box boundaries use `Inflow`/`Outflow`/`Periodic`.
-- Embedded interface `Γ` is currently used in no-flow mode (`u·n=0`) via zero interface velocity input (`uγ = 0`).
+- Embedded interface `Γ` uses sign-based closure with `s = uγ·nγ`:
+  - if `s < 0` and `bc_interface` provides a value, inflow Dirichlet is imposed (`Tγ = g`),
+  - otherwise (`s >= 0`, or no inflow value) continuity closure is used (`Tγ = Tω`).
+- No-flow mode is recovered with zero interface velocity input (`uγ = 0`).
 
 ## Feature Status
 
@@ -41,8 +44,8 @@ Temporal integration in `solve_unsteady!`:
 | Time scheme | Generic theta method | Implemented | Numeric `scheme` accepted as `theta` |
 | Outer BCs | Inflow / Outflow / Periodic | Implemented | Through `PenguinBCs.jl` border conditions |
 | Embedded interface BC | No-flow boundary (`u·n=0` on `Γ`) | Implemented | Use zero interface velocity input (`uγ = 0`) |
-| Embedded interface BC | Embedded inflow/outflow scalar imposition | Not supported | Inflow/outflow BCs are only for outer box boundaries |
+| Embedded interface BC | Embedded inflow/outflow scalar imposition | Implemented | Sign-based on `uγ·nγ`: inflow uses `bc_interface`, else continuity |
 
 ## Current Limitation
 
-- Embedded inflow/outflow scalar boundary conditions on `Γ` are not supported; embedded-interface mode is no-flow (`u·n=0`).
+- Two-phase transport model is not yet implemented.

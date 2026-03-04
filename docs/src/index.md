@@ -34,8 +34,10 @@ Unsteady time schemes in `solve_unsteady!`:
 ## Embedded Interface Convention
 
 - Outer box boundaries use advection boundary conditions (`Inflow`, `Outflow`, `Periodic`).
-- Embedded interface `Γ` is handled in no-flow mode (`u·n=0`) by setting interface velocity to zero.
-- In 2D examples/tests this is given by `uγ = (zeros(nt), zeros(nt))`.
+- Embedded interface `Γ` uses sign-based closure with `s = uγ·nγ`:
+  - if `s < 0` and `bc_interface` provides a value, impose `Tγ = g` (inflow Dirichlet),
+  - otherwise use continuity closure `Tγ = Tω`.
+- No-flow mode is recovered by setting interface velocity to zero, e.g. `uγ = (zeros(nt), zeros(nt))`.
 
 ## Feature Status
 
@@ -50,11 +52,11 @@ Unsteady time schemes in `solve_unsteady!`:
 | Time scheme | Generic theta method | Implemented | Numeric `scheme` accepted as `theta` |
 | Outer BCs | Inflow / Outflow / Periodic | Implemented | Through `PenguinBCs.jl` border conditions |
 | Embedded interface BC | No-flow boundary (`u·n=0` on `Γ`) | Implemented | Use zero interface velocity input (`uγ = 0`) |
-| Embedded interface BC | Embedded inflow/outflow scalar imposition | Not supported | Inflow/outflow BCs are only for outer box boundaries |
+| Embedded interface BC | Embedded inflow/outflow scalar imposition | Implemented | Sign-based on `uγ·nγ`: inflow uses `bc_interface`, else continuity |
 
 ## Current Limitation
 
-- Embedded inflow/outflow scalar boundary conditions on `Γ` are not supported; embedded-interface mode is no-flow (`u·n=0`).
+- Two-phase transport model is not yet implemented.
 
 ## Public API
 
@@ -102,6 +104,7 @@ Example scripts are available in `examples/`:
 - `smooth_blob_translation.jl`
 - `sharp_peak_advection.jl`
 - `manufactured_solution.jl`
+- `embedded_interface_bc_validation.jl`
 
 ## Build Docs
 

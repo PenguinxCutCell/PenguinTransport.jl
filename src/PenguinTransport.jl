@@ -162,8 +162,27 @@ function _adv_border_time_dependent(bc::BorderConditions, x::SVector{N,T}) where
 	return false
 end
 
-_interface_time_dependent(bc_interface, x::SVector{N,T}) where {N,T} = _value_time_dependent(bc_interface, x)
 _interface_time_dependent(::Nothing, x::SVector{N,T}) where {N,T} = false
+_interface_time_dependent(bc_interface::Inflow, x::SVector{N,T}) where {N,T} = _value_time_dependent(bc_interface.value, x)
+_interface_time_dependent(::Outflow, x::SVector{N,T}) where {N,T} = false
+_interface_time_dependent(::Periodic, x::SVector{N,T}) where {N,T} = false
+_interface_time_dependent(bc_interface::Dirichlet, x::SVector{N,T}) where {N,T} = _value_time_dependent(bc_interface.value, x)
+_interface_time_dependent(bc_interface, x::SVector{N,T}) where {N,T} = _value_time_dependent(bc_interface, x)
+
+function _interface_inflow_value(bc_interface, x::SVector{N,T}, t::T) where {N,T}
+	if bc_interface === nothing
+		return nothing
+	elseif bc_interface isa Inflow
+		return _eval_fun_or_const(bc_interface.value, x, t)
+	elseif bc_interface isa Dirichlet
+		return _eval_fun_or_const(bc_interface.value, x, t)
+	elseif bc_interface isa Outflow || bc_interface isa Periodic
+		return nothing
+	elseif bc_interface isa AbstractBoundary
+		throw(ArgumentError("unsupported bc_interface type $(typeof(bc_interface)); expected nothing, Inflow(value), Dirichlet(value), or scalar/callback"))
+	end
+	return _eval_fun_or_const(bc_interface, x, t)
+end
 
 function _insert_block!(A::SparseMatrixCSC{T,Int}, rows::UnitRange{Int}, cols::UnitRange{Int}, B::SparseMatrixCSC{T,Int}) where {T}
 	size(B, 1) == length(rows) || throw(DimensionMismatch("block rows do not match target range"))
@@ -306,13 +325,15 @@ function _interface_closure(
 		end
 
 		if s < zero(T)
-			g = model.bc_interface === nothing ? zero(T) : _eval_fun_or_const(model.bc_interface, model.cap.C_γ[lin], t)
-			a22[lin] = Γ
-			b2[lin] = Γ * g
-		else
-			a21[lin] = -Γ
-			a22[lin] = Γ
+			g = _interface_inflow_value(model.bc_interface, model.cap.C_γ[lin], t)
+			if g !== nothing
+				a22[lin] = Γ
+				b2[lin] = Γ * g
+				continue
+			end
 		end
+		a21[lin] = -Γ
+		a22[lin] = Γ
 	end
 
 	return spdiagm(0 => a21), spdiagm(0 => a22), b2
