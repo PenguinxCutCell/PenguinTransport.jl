@@ -17,6 +17,14 @@ export solve_steady!, solve_unsteady!
 export update_advection_ops!, rebuild!
 export omega1_view, gamma1_view, omega2_view, gamma2_view
 
+"""
+    TransportModelMono(cap, ops, uω, uγ; kwargs...)
+    TransportModelMono(cap, uω, uγ; kwargs...)
+
+Monophasic advection transport model on cut cells.
+
+Unknown ordering is `(ω, γ)` where `ω` are bulk cell values and `γ` are interface values.
+"""
 mutable struct TransportModelMono{N,T,VTω,VTγ,ST,BCT,ICT,SCT}
 	ops::AdvectionOps{N,T}
 	cap::AssembledCapacity{N,T}
@@ -37,6 +45,14 @@ layout_two_phase(nt::Int) = (
 	γ2=(3 * nt + 1):(4 * nt),
 )
 
+"""
+    TransportModelTwoPhase(cap1, cap2, ops1, ops2, u1ω, u1γ, u2ω, u2γ; kwargs...)
+    TransportModelTwoPhase(cap1, cap2, u1ω, u1γ, u2ω, u2γ; kwargs...)
+
+Two-phase advection transport model with phase-wise cut-cell capacities and flux-coupled interface rows.
+
+Unknown ordering is `(ω1, γ1, ω2, γ2)`.
+"""
 mutable struct TransportModelTwoPhase{
 	N,T,
 	OPS1,OPS2,
@@ -669,6 +685,11 @@ function _ops_for_time(model::TransportModelMono{N,T}, t::T) where {N,T}
 	return ops, uωv, uγv
 end
 
+"""
+    update_advection_ops!(model; t=0)
+
+Rebuild and store advection operators at time `t` for a mono or two-phase model.
+"""
 function update_advection_ops!(model::TransportModelMono{N,T}; t::T=zero(T)) where {N,T}
 	ops, _, _ = _ops_for_time(model, t)
 	model.ops = ops
@@ -683,12 +704,22 @@ function update_advection_ops!(model::TransportModelTwoPhase{N,T}; t::T=zero(T))
 	return model
 end
 
+"""
+    rebuild!(model::TransportModelMono, moments; bc=0, t=0)
+
+Rebuild capacity geometry and refresh advection operators for a monophasic model.
+"""
 function rebuild!(model::TransportModelMono{N,T}, moments; bc=zero(T), t::T=zero(T)) where {N,T}
 	CartesianOperators.rebuild!(model.cap, moments; bc=bc)
 	update_advection_ops!(model; t=t)
 	return model
 end
 
+"""
+    assemble_steady_mono!(sys, model, t)
+
+Assemble the steady monophasic linear system at time `t`.
+"""
 function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N,T}, t::T) where {N,T}
 	nt = model.cap.ntotal
 	lay = model.layout.offsets
@@ -732,6 +763,11 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 	return sys
 end
 
+"""
+    assemble_steady_two_phase!(sys, model, t)
+
+Assemble the steady two-phase linear system at time `t` with interface flux coupling.
+"""
 function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelTwoPhase{N,T}, t::T) where {N,T}
 	_validate_two_phase_caps(model.cap1, model.cap2)
 	lay = model.layout
@@ -851,6 +887,11 @@ function _init_unsteady_state_two_phase(model::TransportModelTwoPhase{N,T}, u0) 
 	return _as_full_state_two_phase(model, u0)
 end
 
+"""
+    assemble_unsteady_mono!(sys, model, uⁿ, t, dt, scheme_or_theta)
+
+Assemble the monophasic theta-method system for one unsteady step.
+"""
 function assemble_unsteady_mono!(
 	sys::LinearSystem{T},
 	model::TransportModelMono{N,T},
@@ -896,6 +937,11 @@ function assemble_unsteady_mono!(
 	return sys
 end
 
+"""
+    assemble_unsteady_two_phase!(sys, model, uⁿ, t, dt, scheme_or_theta)
+
+Assemble the two-phase theta-method system for one unsteady step.
+"""
 function assemble_unsteady_two_phase!(
 	sys::LinearSystem{T},
 	model::TransportModelTwoPhase{N,T},
@@ -944,6 +990,11 @@ function PenguinSolverCore.assemble!(sys::LinearSystem{T}, model::TransportModel
 	assemble_unsteady_two_phase!(sys, model, sys.x, convert(T, t), convert(T, dt), one(T))
 end
 
+"""
+    solve_steady!(model; t=0, method=:direct, kwargs...)
+
+Assemble and solve the steady linear system for mono or two-phase transport models.
+"""
 function solve_steady!(model::TransportModelMono{N,T}; t::T=zero(T), method::Symbol=:direct, kwargs...) where {N,T}
 	n = maximum((last(model.layout.offsets.ω), last(model.layout.offsets.γ)))
 	sys = LinearSystem(spzeros(T, n, n), zeros(T, n))
@@ -1081,6 +1132,12 @@ function _set_constant_rhs_two_phase!(
 	return b
 end
 
+"""
+    solve_unsteady!(model, u0, tspan; dt, scheme=:BE, method=:direct, save_history=true, kwargs...)
+
+Time-integrate mono or two-phase transport with a theta-method (`:BE`, `:CN`, or numeric `theta`).
+Returns `(times, states, system, reused_constant_operator)`.
+"""
 function solve_unsteady!(
 	model::TransportModelMono{N,T},
 	u0,
