@@ -37,6 +37,8 @@ Temporal integration in `solve_unsteady!`:
 |---|---|---|---|
 | Models | Monophasic steady transport | Implemented | `TransportModelMono` + `assemble_steady_mono!` + `solve_steady!` |
 | Models | Monophasic unsteady transport | Implemented | `assemble_unsteady_mono!` + `solve_unsteady!` |
+| Models | Two-phase steady transport | Implemented | `TransportModelTwoPhase` + `assemble_steady_two_phase!` + flux continuity coupling |
+| Models | Two-phase unsteady transport | Implemented | `assemble_unsteady_two_phase!` + `solve_unsteady!` + theta-method |
 | Advection space scheme | Centered | Implemented | `Centered()` |
 | Advection space scheme | First-order upwind | Implemented | `Upwind1()` |
 | Time scheme | Backward Euler | Implemented | `scheme=:BE` |
@@ -48,4 +50,4 @@ Temporal integration in `solve_unsteady!`:
 
 ## Current Limitation
 
-- Two-phase transport model is not yet implemented.
+- Two-phase interface configuration with both phases locally inflow at the same `Γ` cell is treated as ill-posed and raises an `ArgumentError`.

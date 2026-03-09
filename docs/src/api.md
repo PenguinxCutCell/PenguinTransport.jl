@@ -4,8 +4,11 @@
 
 ```@docs
 TransportModelMono
+TransportModelTwoPhase
 assemble_steady_mono!
 assemble_unsteady_mono!
+assemble_steady_two_phase!
+assemble_unsteady_two_phase!
 solve_steady!
 solve_unsteady!
 update_advection_ops!

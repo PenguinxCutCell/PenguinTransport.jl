@@ -10,9 +10,12 @@ using PenguinBCs
 using PenguinSolverCore
 
 export TransportModelMono
+export TransportModelTwoPhase
 export assemble_steady_mono!, assemble_unsteady_mono!
+export assemble_steady_two_phase!, assemble_unsteady_two_phase!
 export solve_steady!, solve_unsteady!
 export update_advection_ops!, rebuild!
+export omega1_view, gamma1_view, omega2_view, gamma2_view
 
 mutable struct TransportModelMono{N,T,VTω,VTγ,ST,BCT,ICT,SCT}
 	ops::AdvectionOps{N,T}
@@ -24,6 +27,39 @@ mutable struct TransportModelMono{N,T,VTω,VTγ,ST,BCT,ICT,SCT}
 	bc_interface::ICT
 	layout::UnknownLayout
 	periodic::NTuple{N,Bool}
+	scheme::SCT
+end
+
+layout_two_phase(nt::Int) = (
+	ω1=1:nt,
+	γ1=(nt + 1):(2 * nt),
+	ω2=(2 * nt + 1):(3 * nt),
+	γ2=(3 * nt + 1):(4 * nt),
+)
+
+mutable struct TransportModelTwoPhase{
+	N,T,
+	OPS1,OPS2,
+	VT1ω,VT1γ,VT2ω,VT2γ,
+	ST1,ST2,
+	BC1,BC2,
+	LT,SCT
+}
+	ops1::OPS1
+	ops2::OPS2
+	cap1::AssembledCapacity{N,T}
+	cap2::AssembledCapacity{N,T}
+	u1ω::VT1ω
+	u1γ::VT1γ
+	u2ω::VT2ω
+	u2γ::VT2γ
+	source1::ST1
+	source2::ST2
+	bc_border1::BC1
+	bc_border2::BC2
+	layout::LT
+	periodic1::NTuple{N,Bool}
+	periodic2::NTuple{N,Bool}
 	scheme::SCT
 end
 
@@ -50,6 +86,99 @@ function TransportModelMono(
 		layout,
 		periodic,
 		scheme,
+	)
+end
+
+function _validate_two_phase_caps(cap1::AssembledCapacity{N,T}, cap2::AssembledCapacity{N,T}) where {N,T}
+	cap1.ntotal == cap2.ntotal || throw(ArgumentError("cap1.ntotal ($(cap1.ntotal)) must match cap2.ntotal ($(cap2.ntotal))"))
+	cap1.nnodes == cap2.nnodes || throw(ArgumentError("cap1.nnodes ($(cap1.nnodes)) must match cap2.nnodes ($(cap2.nnodes))"))
+	return nothing
+end
+
+function TransportModelTwoPhase(
+	cap1::AssembledCapacity{N,T},
+	cap2::AssembledCapacity{N,T},
+	ops1::AdvectionOps{N,T},
+	ops2::AdvectionOps{N,T},
+	u1ω,
+	u1γ,
+	u2ω,
+	u2γ;
+	source1=((args...) -> zero(T)),
+	source2=((args...) -> zero(T)),
+	bc_border1::BorderConditions=BorderConditions(),
+	bc_border2::BorderConditions=BorderConditions(),
+	layout=layout_two_phase(cap1.ntotal),
+	periodic1::NTuple{N,Bool}=periodic_flags(bc_border1, N),
+	periodic2::NTuple{N,Bool}=periodic_flags(bc_border2, N),
+	scheme::AdvectionScheme=Centered(),
+) where {N,T}
+	_validate_two_phase_caps(cap1, cap2)
+	return TransportModelTwoPhase{
+		N,T,
+		typeof(ops1),typeof(ops2),
+		typeof(u1ω),typeof(u1γ),typeof(u2ω),typeof(u2γ),
+		typeof(source1),typeof(source2),
+		typeof(bc_border1),typeof(bc_border2),
+		typeof(layout),typeof(scheme),
+	}(
+		ops1,
+		ops2,
+		cap1,
+		cap2,
+		u1ω,
+		u1γ,
+		u2ω,
+		u2γ,
+		source1,
+		source2,
+		bc_border1,
+		bc_border2,
+		layout,
+		periodic1,
+		periodic2,
+		scheme,
+	)
+end
+
+function TransportModelTwoPhase(
+	cap1::AssembledCapacity{N,T},
+	cap2::AssembledCapacity{N,T},
+	u1ω,
+	u1γ,
+	u2ω,
+	u2γ;
+	source1=((args...) -> zero(T)),
+	source2=((args...) -> zero(T)),
+	bc_border1::BorderConditions=BorderConditions(),
+	bc_border2::BorderConditions=BorderConditions(),
+	layout=layout_two_phase(cap1.ntotal),
+	periodic1::NTuple{N,Bool}=periodic_flags(bc_border1, N),
+	periodic2::NTuple{N,Bool}=periodic_flags(bc_border2, N),
+	scheme::AdvectionScheme=Centered(),
+) where {N,T}
+	_validate_two_phase_caps(cap1, cap2)
+	u1ωv, u1γv = _velocity_values(cap1, u1ω, u1γ, zero(T))
+	u2ωv, u2γv = _velocity_values(cap2, u2ω, u2γ, zero(T))
+	ops1 = advection_ops(cap1, u1ωv, u1γv; periodic=periodic1, scheme=scheme)
+	ops2 = advection_ops(cap2, u2ωv, u2γv; periodic=periodic2, scheme=scheme)
+	return TransportModelTwoPhase(
+		cap1,
+		cap2,
+		ops1,
+		ops2,
+		u1ω,
+		u1γ,
+		u2ω,
+		u2γ;
+		source1=source1,
+		source2=source2,
+		bc_border1=bc_border1,
+		bc_border2=bc_border2,
+		layout=layout,
+		periodic1=periodic1,
+		periodic2=periodic2,
+		scheme=scheme,
 	)
 end
 
@@ -95,7 +224,7 @@ function _eval_fun_or_const(v, x::SVector{N,T}, t::T) where {N,T}
 	throw(ArgumentError("callback/value must be numeric, Ref, (x...), or (x..., t)"))
 end
 
-function _source_values_mono(cap::AssembledCapacity{N,T}, source, t::T) where {N,T}
+function _source_values(cap::AssembledCapacity{N,T}, source, t::T) where {N,T}
 	out = Vector{T}(undef, cap.ntotal)
 	@inbounds for i in eachindex(out)
 		out[i] = _eval_fun_or_const(source, cap.C_ω[i], t)
@@ -279,6 +408,14 @@ function _cell_activity_masks(cap::AssembledCapacity{N,T}) where {N,T}
 	return activeω, activeγ
 end
 
+function _write_row_activity!(active::BitVector, rows::UnitRange{Int}, mask::BitVector)
+	length(rows) == length(mask) || throw(ArgumentError("row range length ($(length(rows))) must match mask length ($(length(mask)))"))
+	@inbounds for i in eachindex(mask)
+		active[rows[i]] = mask[i]
+	end
+	return active
+end
+
 function _mono_row_activity(
 	cap::AssembledCapacity{N,T},
 	lay,
@@ -286,10 +423,24 @@ function _mono_row_activity(
 	activeω, activeγ = _cell_activity_masks(cap)
 	nsys = maximum((last(lay.ω), last(lay.γ)))
 	active = falses(nsys)
-	@inbounds for i in 1:cap.ntotal
-		active[lay.ω[i]] = activeω[i]
-		active[lay.γ[i]] = activeγ[i]
-	end
+	_write_row_activity!(active, lay.ω, activeω)
+	_write_row_activity!(active, lay.γ, activeγ)
+	return active
+end
+
+function _two_phase_row_activity(
+	cap1::AssembledCapacity{N,T},
+	cap2::AssembledCapacity{N,T},
+	lay,
+) where {N,T}
+	active1ω, active1γ = _cell_activity_masks(cap1)
+	active2ω, active2γ = _cell_activity_masks(cap2)
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	active = falses(nsys)
+	_write_row_activity!(active, lay.ω1, active1ω)
+	_write_row_activity!(active, lay.γ1, active1γ)
+	_write_row_activity!(active, lay.ω2, active2ω)
+	_write_row_activity!(active, lay.γ2, active2γ)
 	return active
 end
 
@@ -297,6 +448,17 @@ function _validate_mono_layout(cap::AssembledCapacity, lay)
 	nt = cap.ntotal
 	length(lay.ω) == nt || throw(ArgumentError("layout ω length ($(length(lay.ω))) must match cap.ntotal ($nt)"))
 	length(lay.γ) == nt || throw(ArgumentError("layout γ length ($(length(lay.γ))) must match cap.ntotal ($nt)"))
+	return nothing
+end
+
+function _validate_two_phase_layout(cap1::AssembledCapacity, cap2::AssembledCapacity, lay)
+	nt1 = cap1.ntotal
+	nt2 = cap2.ntotal
+	nt1 == nt2 || throw(ArgumentError("phase capacities must have identical ntotal; got $nt1 and $nt2"))
+	length(lay.ω1) == nt1 || throw(ArgumentError("layout ω1 length ($(length(lay.ω1))) must match cap1.ntotal ($nt1)"))
+	length(lay.γ1) == nt1 || throw(ArgumentError("layout γ1 length ($(length(lay.γ1))) must match cap1.ntotal ($nt1)"))
+	length(lay.ω2) == nt2 || throw(ArgumentError("layout ω2 length ($(length(lay.ω2))) must match cap2.ntotal ($nt2)"))
+	length(lay.γ2) == nt2 || throw(ArgumentError("layout γ2 length ($(length(lay.γ2))) must match cap2.ntotal ($nt2)"))
 	return nothing
 end
 
@@ -339,6 +501,77 @@ function _interface_closure(
 	return spdiagm(0 => a21), spdiagm(0 => a22), b2
 end
 
+function _interface_closure_two_phase(
+	model::TransportModelTwoPhase{N,T},
+	u1γ::NTuple{N,Vector{T}},
+	u2γ::NTuple{N,Vector{T}},
+	t::T,
+) where {N,T}
+	_ = t
+	nt = model.cap1.ntotal
+	b21 = zeros(T, nt)
+	b22 = zeros(T, nt)
+	b23 = zeros(T, nt)
+	b24 = zeros(T, nt)
+	b41 = zeros(T, nt)
+	b42 = zeros(T, nt)
+	b43 = zeros(T, nt)
+	b44 = zeros(T, nt)
+	rhs2 = zeros(T, nt)
+	rhs4 = zeros(T, nt)
+
+	LI = LinearIndices(model.cap1.nnodes)
+	for I in CartesianIndices(model.cap1.nnodes)
+		lin = LI[I]
+		any(d -> I[d] == model.cap1.nnodes[d], 1:N) && continue
+
+		Γ1 = model.cap1.buf.Γ[lin]
+		Γ2 = model.cap2.buf.Γ[lin]
+		have_iface = (isfinite(Γ1) && Γ1 > zero(T)) || (isfinite(Γ2) && Γ2 > zero(T))
+		have_iface || continue
+
+		tol = convert(T, 100) * eps(T) * max(one(T), abs(Γ1), abs(Γ2))
+		abs(Γ1 - Γ2) <= tol || throw(ArgumentError("interface measure mismatch at cell $lin: Γ1=$Γ1 Γ2=$Γ2"))
+		Γ = convert(T, 0.5) * (Γ1 + Γ2)
+		(isfinite(Γ) && Γ > zero(T)) || continue
+
+		s1 = zero(T)
+		s2 = zero(T)
+		@inbounds for d in 1:N
+			s1 += u1γ[d][lin] * model.cap1.n_γ[lin][d]
+			s2 += u2γ[d][lin] * model.cap2.n_γ[lin][d]
+		end
+
+		if s1 < zero(T) && s2 < zero(T)
+			throw(ArgumentError("two-phase transport interface is locally ill-posed: both phases are inflow at Γ cell $lin"))
+		elseif s1 < zero(T) && s2 >= zero(T)
+			# gamma1 row: flux continuity; gamma2 row: phase-2 outflow closure
+			b22[lin] = Γ * s1
+			b24[lin] = Γ * s2
+			b43[lin] = -Γ
+			b44[lin] = Γ
+		elseif s2 < zero(T) && s1 >= zero(T)
+			# gamma2 row: flux continuity; gamma1 row: phase-1 outflow closure
+			b21[lin] = -Γ
+			b22[lin] = Γ
+			b42[lin] = Γ * s1
+			b44[lin] = Γ * s2
+		else
+			# both outflow: continuity on each phase
+			b21[lin] = -Γ
+			b22[lin] = Γ
+			b43[lin] = -Γ
+			b44[lin] = Γ
+		end
+	end
+
+	return (
+		spdiagm(0 => b21), spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
+		spdiagm(0 => b41), spdiagm(0 => b42), spdiagm(0 => b43), spdiagm(0 => b44),
+		rhs2, rhs4,
+	)
+end
+
 function _normal_face_point(cap::AssembledCapacity{N,T}, I::CartesianIndex{N}, d::Int, is_high::Bool) where {N,T}
 	x_d = is_high ? cap.xyz[d][end] : cap.xyz[d][1]
 	lin = LinearIndices(cap.nnodes)[I]
@@ -354,10 +587,11 @@ function apply_box_bc_transport_mono!(
 	bc_border::BorderConditions,
 	adv_scheme::AdvectionScheme;
 	t::T=zero(T),
-	layout::UnknownLayout=layout_mono(cap.ntotal),
+	ωrows::UnitRange{Int}=layout_mono(cap.ntotal).offsets.ω,
 ) where {N,T}
 	validate_borderconditions!(bc_border, N)
-	length(b) >= last(layout.offsets.ω) || throw(ArgumentError("rhs vector does not contain ω block"))
+	length(ωrows) == cap.ntotal || throw(ArgumentError("ω row range length ($(length(ωrows))) must match cap.ntotal ($(cap.ntotal))"))
+	length(b) >= last(ωrows) || throw(ArgumentError("rhs vector does not contain ω block"))
 
 	LI = LinearIndices(cap.nnodes)
 	pairs = if N == 1
@@ -380,7 +614,7 @@ function apply_box_bc_transport_mono!(
 			d, is_high, normal_sign = side_info(side, N)
 			for I in each_boundary_cell(cap.nnodes, side)
 				row_lin = LI[I]
-				row = layout.offsets.ω[row_lin]
+				row = ωrows[row_lin]
 				Aface = cap.buf.A[d][row_lin]
 				if !(isfinite(Aface) && Aface != zero(T))
 					continue
@@ -395,7 +629,7 @@ function apply_box_bc_transport_mono!(
 				if is_high
 					Ihalo = CartesianIndex(ntuple(k -> k == d ? cap.nnodes[d] : I[k], N))
 					halo_lin = LI[Ihalo]
-					halo_row = layout.offsets.ω[halo_lin]
+					halo_row = ωrows[halo_lin]
 					_set_row_identity!(A, b, halo_row, g)
 				else
 					if adv_scheme isa Centered
@@ -417,15 +651,35 @@ function _is_canonical_mono_layout(lay, nt::Int)
 	return lay.ω == (1:nt) && lay.γ == ((nt + 1):(2 * nt))
 end
 
+function _ops_for_time(
+	cap::AssembledCapacity{N,T},
+	uω,
+	uγ,
+	periodic::NTuple{N,Bool},
+	scheme::AdvectionScheme,
+	t::T,
+) where {N,T}
+	uωv, uγv = _velocity_values(cap, uω, uγ, t)
+	ops = advection_ops(cap, uωv, uγv; periodic=periodic, scheme=scheme)
+	return ops, uωv, uγv
+end
+
 function _ops_for_time(model::TransportModelMono{N,T}, t::T) where {N,T}
-	uωv, uγv = _velocity_values(model.cap, model.uω, model.uγ, t)
-	ops = advection_ops(model.cap, uωv, uγv; periodic=model.periodic, scheme=model.scheme)
+	ops, uωv, uγv = _ops_for_time(model.cap, model.uω, model.uγ, model.periodic, model.scheme, t)
 	return ops, uωv, uγv
 end
 
 function update_advection_ops!(model::TransportModelMono{N,T}; t::T=zero(T)) where {N,T}
 	ops, _, _ = _ops_for_time(model, t)
 	model.ops = ops
+	return model
+end
+
+function update_advection_ops!(model::TransportModelTwoPhase{N,T}; t::T=zero(T)) where {N,T}
+	ops1, _, _ = _ops_for_time(model.cap1, model.u1ω, model.u1γ, model.periodic1, model.scheme, t)
+	ops2, _, _ = _ops_for_time(model.cap2, model.u2ω, model.u2γ, model.periodic2, model.scheme, t)
+	model.ops1 = ops1
+	model.ops2 = ops2
 	return model
 end
 
@@ -447,7 +701,7 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 	conv_bulk = reduce(+, ops.C)
 	conv_iface = convert(T, 0.5) * reduce(+, ops.K)
 
-	fω = _source_values_mono(model.cap, model.source, t)
+	fω = _source_values(model.cap, model.source, t)
 	b1 = model.cap.V * fω
 	A21, A22, b2 = _interface_closure(model, uγv, t)
 	A11 = conv_bulk + conv_iface
@@ -472,8 +726,67 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 	length(sys.x) == nsys || (sys.x = zeros(T, nsys))
 	sys.cache = nothing
 
-	apply_box_bc_transport_mono!(sys.A, sys.b, model.cap, uωv, model.bc_border, model.scheme; t=t, layout=model.layout)
+	apply_box_bc_transport_mono!(sys.A, sys.b, model.cap, uωv, model.bc_border, model.scheme; t=t, ωrows=model.layout.offsets.ω)
 	active_rows = _mono_row_activity(model.cap, lay)
+	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
+	return sys
+end
+
+function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelTwoPhase{N,T}, t::T) where {N,T}
+	_validate_two_phase_caps(model.cap1, model.cap2)
+	lay = model.layout
+	_validate_two_phase_layout(model.cap1, model.cap2, lay)
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+
+	ops1, u1ωv, u1γv = _ops_for_time(model.cap1, model.u1ω, model.u1γ, model.periodic1, model.scheme, t)
+	ops2, u2ωv, u2γv = _ops_for_time(model.cap2, model.u2ω, model.u2γ, model.periodic2, model.scheme, t)
+	model.ops1 = ops1
+	model.ops2 = ops2
+
+	conv_bulk1 = reduce(+, ops1.C)
+	conv_iface1 = convert(T, 0.5) * reduce(+, ops1.K)
+	A11 = conv_bulk1 + conv_iface1
+	A12 = conv_iface1
+	f1 = _source_values(model.cap1, model.source1, t)
+	b1 = model.cap1.V * f1
+
+	conv_bulk2 = reduce(+, ops2.C)
+	conv_iface2 = convert(T, 0.5) * reduce(+, ops2.K)
+	A33 = conv_bulk2 + conv_iface2
+	A34 = conv_iface2
+	f2 = _source_values(model.cap2, model.source2, t)
+	b3 = model.cap2.V * f2
+
+	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 = _interface_closure_two_phase(model, u1γv, u2γv, t)
+
+	A = spzeros(T, nsys, nsys)
+	b = zeros(T, nsys)
+	_insert_block!(A, lay.ω1, lay.ω1, A11)
+	_insert_block!(A, lay.ω1, lay.γ1, A12)
+	_insert_block!(A, lay.γ1, lay.ω1, B21)
+	_insert_block!(A, lay.γ1, lay.γ1, B22)
+	_insert_block!(A, lay.γ1, lay.ω2, B23)
+	_insert_block!(A, lay.γ1, lay.γ2, B24)
+	_insert_block!(A, lay.ω2, lay.ω2, A33)
+	_insert_block!(A, lay.ω2, lay.γ2, A34)
+	_insert_block!(A, lay.γ2, lay.ω1, B41)
+	_insert_block!(A, lay.γ2, lay.γ1, B42)
+	_insert_block!(A, lay.γ2, lay.ω2, B43)
+	_insert_block!(A, lay.γ2, lay.γ2, B44)
+	_insert_vec!(b, lay.ω1, b1)
+	_insert_vec!(b, lay.γ1, b2)
+	_insert_vec!(b, lay.ω2, b3)
+	_insert_vec!(b, lay.γ2, b4)
+
+	sys.A = A
+	sys.b = b
+	length(sys.x) == nsys || (sys.x = zeros(T, nsys))
+	sys.cache = nothing
+
+	apply_box_bc_transport_mono!(sys.A, sys.b, model.cap1, u1ωv, model.bc_border1, model.scheme; t=t, ωrows=lay.ω1)
+	apply_box_bc_transport_mono!(sys.A, sys.b, model.cap2, u2ωv, model.bc_border2, model.scheme; t=t, ωrows=lay.ω2)
+
+	active_rows = _two_phase_row_activity(model.cap1, model.cap2, lay)
 	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
 	return sys
 end
@@ -505,6 +818,37 @@ function _init_unsteady_state_mono(model::TransportModelMono{N,T}, u0) where {N,
 		throw(DimensionMismatch("u0 length must be $nt (ω block) or $nsys (full system)"))
 	end
 	return u
+end
+
+function _as_full_state_two_phase(model::TransportModelTwoPhase{N,T}, u0) where {N,T}
+	lay = model.layout
+	nt = model.cap1.ntotal
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	u = zeros(T, nsys)
+
+	if u0 isa Tuple
+		length(u0) == 2 || throw(DimensionMismatch("tuple initial state must be (u01, u02)"))
+		length(u0[1]) == nt || throw(DimensionMismatch("u01 length must be $nt"))
+		length(u0[2]) == nt || throw(DimensionMismatch("u02 length must be $nt"))
+		u[lay.ω1] .= Vector{T}(u0[1])
+		u[lay.ω2] .= Vector{T}(u0[2])
+		return u
+	end
+
+	len = length(u0)
+	if len == nsys
+		u .= Vector{T}(u0)
+	elseif len == 2 * nt
+		u[lay.ω1] .= Vector{T}(u0[1:nt])
+		u[lay.ω2] .= Vector{T}(u0[(nt + 1):(2 * nt)])
+	else
+		throw(DimensionMismatch("u0 must be length $nsys (full state), length $(2 * nt) (ω blocks concatenated), or tuple (u01, u02)"))
+	end
+	return u
+end
+
+function _init_unsteady_state_two_phase(model::TransportModelTwoPhase{N,T}, u0) where {N,T}
+	return _as_full_state_two_phase(model, u0)
 end
 
 function assemble_unsteady_mono!(
@@ -552,14 +896,66 @@ function assemble_unsteady_mono!(
 	return sys
 end
 
+function assemble_unsteady_two_phase!(
+	sys::LinearSystem{T},
+	model::TransportModelTwoPhase{N,T},
+	uⁿ,
+	t::T,
+	dt::T,
+	scheme_or_theta,
+) where {N,T}
+	θ = _theta_from_scheme(T, scheme_or_theta)
+	assemble_steady_two_phase!(sys, model, t + θ * dt)
+
+	lay = model.layout
+	_validate_two_phase_layout(model.cap1, model.cap2, lay)
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	ufull = _as_full_state_two_phase(model, uⁿ)
+
+	if θ != one(T)
+		Aω1_prev = sys.A[lay.ω1, :]
+		Aω2_prev = sys.A[lay.ω2, :]
+		corr1 = Aω1_prev * ufull
+		corr2 = Aω2_prev * ufull
+		_scale_rows!(sys.A, lay.ω1, θ)
+		_scale_rows!(sys.A, lay.ω2, θ)
+		_insert_vec!(sys.b, lay.ω1, (-(one(T) - θ)) .* corr1)
+		_insert_vec!(sys.b, lay.ω2, (-(one(T) - θ)) .* corr2)
+	end
+
+	M1 = model.cap1.buf.V ./ dt
+	M2 = model.cap2.buf.V ./ dt
+	sys.A = sys.A + sparse(lay.ω1, lay.ω1, M1, nsys, nsys)
+	sys.A = sys.A + sparse(lay.ω2, lay.ω2, M2, nsys, nsys)
+	_insert_vec!(sys.b, lay.ω1, M1 .* Vector{T}(ufull[lay.ω1]))
+	_insert_vec!(sys.b, lay.ω2, M2 .* Vector{T}(ufull[lay.ω2]))
+
+	active_rows = _two_phase_row_activity(model.cap1, model.cap2, lay)
+	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
+	sys.cache = nothing
+	return sys
+end
+
 function PenguinSolverCore.assemble!(sys::LinearSystem{T}, model::TransportModelMono{N,T}, t, dt) where {N,T}
 	assemble_unsteady_mono!(sys, model, sys.x, convert(T, t), convert(T, dt), one(T))
+end
+
+function PenguinSolverCore.assemble!(sys::LinearSystem{T}, model::TransportModelTwoPhase{N,T}, t, dt) where {N,T}
+	assemble_unsteady_two_phase!(sys, model, sys.x, convert(T, t), convert(T, dt), one(T))
 end
 
 function solve_steady!(model::TransportModelMono{N,T}; t::T=zero(T), method::Symbol=:direct, kwargs...) where {N,T}
 	n = maximum((last(model.layout.offsets.ω), last(model.layout.offsets.γ)))
 	sys = LinearSystem(spzeros(T, n, n), zeros(T, n))
 	assemble_steady_mono!(sys, model, t)
+	solve!(sys; method=method, kwargs...)
+	return sys
+end
+
+function solve_steady!(model::TransportModelTwoPhase{N,T}; t::T=zero(T), method::Symbol=:direct, kwargs...) where {N,T}
+	n = maximum((last(model.layout.ω1), last(model.layout.γ1), last(model.layout.ω2), last(model.layout.γ2)))
+	sys = LinearSystem(spzeros(T, n, n), zeros(T, n))
+	assemble_steady_two_phase!(sys, model, t)
 	solve!(sys; method=method, kwargs...)
 	return sys
 end
@@ -582,6 +978,30 @@ function _rhs_time_dependent(model::TransportModelMono{N,T}) where {N,T}
 		_interface_time_dependent(model.bc_interface, xγ) ||
 		_vel_time_dependent(model.uω, xω) ||
 		_vel_time_dependent(model.uγ, xγ)
+end
+
+function _matrix_time_dependent(model::TransportModelTwoPhase{N,T}) where {N,T}
+	x1ω = model.cap1.C_ω[1]
+	x1γ = model.cap1.C_γ[1]
+	x2ω = model.cap2.C_ω[1]
+	x2γ = model.cap2.C_γ[1]
+	return _vel_time_dependent(model.u1ω, x1ω) ||
+		_vel_time_dependent(model.u1γ, x1γ) ||
+		_vel_time_dependent(model.u2ω, x2ω) ||
+		_vel_time_dependent(model.u2γ, x2γ)
+end
+
+function _rhs_time_dependent(model::TransportModelTwoPhase{N,T}) where {N,T}
+	x1ω = model.cap1.C_ω[1]
+	x2ω = model.cap2.C_ω[1]
+	return _source_time_dependent(model.source1, x1ω) ||
+		_source_time_dependent(model.source2, x2ω) ||
+		_adv_border_time_dependent(model.bc_border1, x1ω) ||
+		_adv_border_time_dependent(model.bc_border2, x2ω) ||
+		_vel_time_dependent(model.u1ω, x1ω) ||
+		_vel_time_dependent(model.u1γ, model.cap1.C_γ[1]) ||
+		_vel_time_dependent(model.u2ω, x2ω) ||
+		_vel_time_dependent(model.u2γ, model.cap2.C_γ[1])
 end
 
 function _prepare_constant_unsteady_mono(model::TransportModelMono{N,T}, t0::T, dt::T, θ::T) where {N,T}
@@ -614,6 +1034,50 @@ function _set_constant_rhs_mono!(
 		_insert_vec!(b, lay.ω, (-(one(T) - θ)) .* corr)
 	end
 	_insert_vec!(b, lay.ω, M .* Vector{T}(u[lay.ω]))
+	return b
+end
+
+function _prepare_constant_unsteady_two_phase(model::TransportModelTwoPhase{N,T}, t0::T, dt::T, θ::T) where {N,T}
+	lay = model.layout
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	sys0 = LinearSystem(spzeros(T, nsys, nsys), zeros(T, nsys))
+	assemble_steady_two_phase!(sys0, model, t0 + θ * dt)
+	Asteady = sys0.A
+	bsteady = copy(sys0.b)
+	Aconst = copy(Asteady)
+	if θ != one(T)
+		_scale_rows!(Aconst, lay.ω1, θ)
+		_scale_rows!(Aconst, lay.ω2, θ)
+	end
+	M1 = model.cap1.buf.V ./ dt
+	M2 = model.cap2.buf.V ./ dt
+	Aconst = Aconst + sparse(lay.ω1, lay.ω1, M1, nsys, nsys)
+	Aconst = Aconst + sparse(lay.ω2, lay.ω2, M2, nsys, nsys)
+	Aω1_prev = Asteady[lay.ω1, :]
+	Aω2_prev = Asteady[lay.ω2, :]
+	return Aconst, bsteady, Aω1_prev, Aω2_prev, M1, M2
+end
+
+function _set_constant_rhs_two_phase!(
+	b::Vector{T},
+	bsteady::Vector{T},
+	Aω1_prev::SparseMatrixCSC{T,Int},
+	Aω2_prev::SparseMatrixCSC{T,Int},
+	M1::Vector{T},
+	M2::Vector{T},
+	lay,
+	u::Vector{T},
+	θ::T,
+) where {T}
+	copyto!(b, bsteady)
+	if θ != one(T)
+		corr1 = Aω1_prev * u
+		corr2 = Aω2_prev * u
+		_insert_vec!(b, lay.ω1, (-(one(T) - θ)) .* corr1)
+		_insert_vec!(b, lay.ω2, (-(one(T) - θ)) .* corr2)
+	end
+	_insert_vec!(b, lay.ω1, M1 .* Vector{T}(u[lay.ω1]))
+	_insert_vec!(b, lay.ω2, M2 .* Vector{T}(u[lay.ω2]))
 	return b
 end
 
@@ -687,5 +1151,81 @@ function solve_unsteady!(
 	end
 	return (times=times, states=states, system=sys, reused_constant_operator=false)
 end
+
+function solve_unsteady!(
+	model::TransportModelTwoPhase{N,T},
+	u0,
+	tspan::Tuple{T,T};
+	dt::T,
+	scheme=:BE,
+	method::Symbol=:direct,
+	save_history::Bool=true,
+	kwargs...,
+) where {N,T}
+	t0, tend = tspan
+	tend >= t0 || throw(ArgumentError("tspan must satisfy tend >= t0"))
+	dt > zero(T) || throw(ArgumentError("dt must be positive"))
+	θ = _theta_from_scheme(T, scheme)
+
+	u = _init_unsteady_state_two_phase(model, u0)
+	lay = model.layout
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+
+	matrix_dep = _matrix_time_dependent(model)
+	rhs_dep = _rhs_time_dependent(model)
+	constant_operator = !matrix_dep && !rhs_dep
+
+	times = T[t0]
+	states = Vector{Vector{T}}()
+	save_history && push!(states, copy(u))
+
+	tol = sqrt(eps(T)) * max(one(T), abs(t0), abs(tend))
+	t = t0
+
+	if constant_operator
+		Aconst, bsteady, Aω1_prev, Aω2_prev, M1, M2 = _prepare_constant_unsteady_two_phase(model, t0, dt, θ)
+		sys = LinearSystem(Aconst, copy(bsteady); x=copy(u))
+		while t < tend - tol
+			dt_step = min(dt, tend - t)
+			if abs(dt_step - dt) <= tol
+				_set_constant_rhs_two_phase!(sys.b, bsteady, Aω1_prev, Aω2_prev, M1, M2, lay, u, θ)
+				solve!(sys; method=method, reuse_factorization=true, kwargs...)
+			else
+				assemble_unsteady_two_phase!(sys, model, u, t, dt_step, θ)
+				solve!(sys; method=method, reuse_factorization=false, kwargs...)
+			end
+			u .= sys.x
+			t += dt_step
+			push!(times, t)
+			save_history && push!(states, copy(u))
+		end
+		if !save_history
+			states = [copy(u)]
+			times = T[t]
+		end
+		return (times=times, states=states, system=sys, reused_constant_operator=true)
+	end
+
+	sys = LinearSystem(spzeros(T, nsys, nsys), zeros(T, nsys); x=copy(u))
+	while t < tend - tol
+		dt_step = min(dt, tend - t)
+		assemble_unsteady_two_phase!(sys, model, u, t, dt_step, θ)
+		solve!(sys; method=method, reuse_factorization=false, kwargs...)
+		u .= sys.x
+		t += dt_step
+		push!(times, t)
+		save_history && push!(states, copy(u))
+	end
+	if !save_history
+		states = [copy(u)]
+		times = T[t]
+	end
+	return (times=times, states=states, system=sys, reused_constant_operator=false)
+end
+
+omega1_view(model::TransportModelTwoPhase, x) = x[model.layout.ω1]
+gamma1_view(model::TransportModelTwoPhase, x) = x[model.layout.γ1]
+omega2_view(model::TransportModelTwoPhase, x) = x[model.layout.ω2]
+gamma2_view(model::TransportModelTwoPhase, x) = x[model.layout.γ2]
 
 end
