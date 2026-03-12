@@ -28,11 +28,11 @@ Steady form:
 
 ## Documentation
 
-- Home: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/>
-- API: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/api/>
-- Examples: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/examples/>
-- Algorithms: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/algorithms/>
-- Transport Models: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/transport/>
+- Home: <https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/>
+- API: <https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/api/>
+- Examples: <https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/examples/>
+- Algorithms: <https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/algorithms/>
+- Transport Models: <https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/transport/>
 
 ## Installation
 
