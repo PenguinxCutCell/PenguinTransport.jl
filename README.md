@@ -10,6 +10,8 @@ It supports:
 
 - mono transport (steady and unsteady),
 - two-phase transport (steady and unsteady),
+- moving mono transport (unsteady),
+- moving two-phase transport (unsteady),
 - spatial advection schemes `Centered()` and `Upwind1()`,
 - outer advection BCs `Inflow` / `Outflow` / `Periodic`,
 - embedded-interface sign-based closure with unknown ordering `(ω1, γ1, ω2, γ2)` for two-phase.
@@ -65,7 +67,7 @@ res = solve_unsteady!(model, zeros(nt), (0.0, 0.2); dt=0.01, scheme=:CN)
 
 ## Time Schemes
 
-All unsteady entry points (`assemble_unsteady_*`, `solve_unsteady!`) accept exactly:
+All unsteady entry points (`assemble_unsteady_*`, `assemble_unsteady_*_moving!`, `solve_unsteady!`, `solve_unsteady_moving!`) accept exactly:
 
 - `:BE` (Backward Euler, `θ = 1`)
 - `:CN` (Crank-Nicolson, `θ = 1/2`)
@@ -75,20 +77,26 @@ Any unsupported symbol or numeric `θ` outside `[0,1]` raises `ArgumentError`.
 
 ## Embedded Interface Convention
 
-Let `s = uγ·nγ`.
+Fixed geometry uses `s = uγ·nγ`.  
+Moving geometry uses relative normal speed `λ = (uγ - wγ)·nγ`.
 
 Mono:
 
-- if `s < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
+- fixed: if `s < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
+- moving: if `λ < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
 - otherwise use continuity closure `Tγ = Tω`.
 
 Two-phase:
 
-- closure is selected locally from phase-wise signs,
+- closure is selected locally from phase-wise signs (`s1,s2` fixed; `λ1,λ2` moving),
 - only inflow information is imposed,
 - the ill-posed both-inflow local configuration is rejected with `ArgumentError`.
 
 No-flow mode is recovered by setting interface velocity to zero (`uγ = 0`).
+
+## Current Limitation (Two-Phase)
+
+At a given interface location, if both phases are locally inflow simultaneously, the local closure is ill-posed for pure advection and assembly throws `ArgumentError` (fixed and moving models).
 
 ## Example Scripts
 
@@ -98,6 +106,10 @@ No-flow mode is recovered by setting interface velocity to zero (`uγ = 0`).
 - `examples/embedded_interface_bc_validation.jl`
 - `examples/two_phase_planar_1d_validation.jl`
 - `examples/two_phase_2d_planar_sanity.jl`
+- `examples/moving_mono_material_translation.jl`
+- `examples/moving_mono_interface_inflow.jl`
+- `examples/moving_two_phase_planar_translation.jl`
+- `examples/moving_two_phase_relative_flux_demo.jl`
 
 ## Local Docs Build
 

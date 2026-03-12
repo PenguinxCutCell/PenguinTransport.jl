@@ -5,15 +5,21 @@ using SparseArrays
 using StaticArrays
 
 using CartesianGeometry
+using CartesianGeometry: GeometricMoments, geometric_moments, nan
+using CartesianGrids: CartesianGrid, SpaceTimeCartesianGrid, grid1d
 using CartesianOperators
 using PenguinBCs
 using PenguinSolverCore
 
 export TransportModelMono
 export TransportModelTwoPhase
+export MovingTransportModelMono
+export MovingTransportModelTwoPhase
 export assemble_steady_mono!, assemble_unsteady_mono!
 export assemble_steady_two_phase!, assemble_unsteady_two_phase!
+export assemble_unsteady_mono_moving!, assemble_unsteady_two_phase_moving!
 export solve_steady!, solve_unsteady!
+export solve_unsteady_moving!
 export update_advection_ops!, rebuild!
 export omega1_view, gamma1_view, omega2_view, gamma2_view
 
@@ -77,6 +83,76 @@ mutable struct TransportModelTwoPhase{
 	periodic1::NTuple{N,Bool}
 	periodic2::NTuple{N,Bool}
 	scheme::SCT
+end
+
+"""
+    MovingTransportModelMono(grid, body, uω, uγ; kwargs...)
+
+Moving-geometry monophasic advection transport model assembled from space-time slabs.
+
+Unknown ordering is `(ω, γ)` and interface inflow/outflow decisions use
+relative interface speed `(uγ - wγ)·nγ`.
+"""
+mutable struct MovingTransportModelMono{N,T,VTω,VTγ,WTγ,ST,BCT,ICT,LT,SCT,BT}
+	grid::CartesianGrid{N,T}
+	body::BT
+	uω::VTω
+	uγ::VTγ
+	wγ::WTγ
+	source::ST
+	bc_border::BCT
+	bc_interface::ICT
+	layout::LT
+	periodic::NTuple{N,Bool}
+	scheme::SCT
+	geom_method::Symbol
+	cap_slab::Union{Nothing,AssembledCapacity{N,T}}
+	ops_slab::Union{Nothing,AdvectionOps{N,T}}
+	Vn::Vector{T}
+	Vn1::Vector{T}
+end
+
+"""
+    MovingTransportModelTwoPhase(grid, body1, u1ω, u1γ, u2ω, u2γ; kwargs...)
+
+Moving-geometry two-phase advection transport model assembled from space-time slabs.
+
+Unknown ordering is `(ω1, γ1, ω2, γ2)` and local interface inflow/outflow
+decisions use relative interface speeds `(u1γ - wγ)·n1γ` and `(u2γ - wγ)·n2γ`.
+"""
+mutable struct MovingTransportModelTwoPhase{
+	N,T,
+	B1T,B2T,
+	VT1ω,VT1γ,VT2ω,VT2γ,WTγ,
+	ST1,ST2,
+	BC1,BC2,
+	LT,SCT
+}
+	grid::CartesianGrid{N,T}
+	body1::B1T
+	body2::B2T
+	u1ω::VT1ω
+	u1γ::VT1γ
+	u2ω::VT2ω
+	u2γ::VT2γ
+	wγ::WTγ
+	source1::ST1
+	source2::ST2
+	bc_border1::BC1
+	bc_border2::BC2
+	layout::LT
+	periodic1::NTuple{N,Bool}
+	periodic2::NTuple{N,Bool}
+	scheme::SCT
+	geom_method::Symbol
+	cap1_slab::Union{Nothing,AssembledCapacity{N,T}}
+	ops1_slab::Union{Nothing,AdvectionOps{N,T}}
+	cap2_slab::Union{Nothing,AssembledCapacity{N,T}}
+	ops2_slab::Union{Nothing,AdvectionOps{N,T}}
+	V1n::Vector{T}
+	V1n1::Vector{T}
+	V2n::Vector{T}
+	V2n1::Vector{T}
 end
 
 function TransportModelMono(
@@ -240,6 +316,119 @@ function _eval_fun_or_const(v, x::SVector{N,T}, t::T) where {N,T}
 	throw(ArgumentError("callback/value must be numeric, Ref, (x...), or (x..., t)"))
 end
 
+"""
+    MovingTransportModelMono(grid, body, uω, uγ; source, bc_border, bc_interface, layout, periodic, scheme, wγ, geom_method)
+
+Build a moving monophasic transport model.
+
+- `body` is a level-set callback accepting `(x...)` or `(x..., t)`.
+- `wγ` is the interface geometry velocity sampled on `C_γ`.
+- Per-step slab caches (`cap_slab`, `ops_slab`, `Vn`, `Vn1`) are updated by moving assembly.
+"""
+function MovingTransportModelMono(
+	grid::CartesianGrid{N,T},
+	body,
+	uω,
+	uγ;
+	wγ=ntuple(_ -> zero(T), N),
+	source=((args...) -> zero(T)),
+	bc_border::BorderConditions=BorderConditions(),
+	bc_interface=nothing,
+	layout::UnknownLayout=layout_mono(prod(grid.n)),
+	periodic::NTuple{N,Bool}=periodic_flags(bc_border, N),
+	scheme::AdvectionScheme=Centered(),
+	geom_method::Symbol=:vofijul,
+) where {N,T}
+	nt = prod(grid.n)
+	return MovingTransportModelMono{
+		N,T,
+		typeof(uω),typeof(uγ),typeof(wγ),typeof(source),
+		typeof(bc_border),typeof(bc_interface),typeof(layout),typeof(scheme),typeof(body),
+	}(
+		grid,
+		body,
+		uω,
+		uγ,
+		wγ,
+		source,
+		bc_border,
+		bc_interface,
+		layout,
+		periodic,
+		scheme,
+		geom_method,
+		nothing,
+		nothing,
+		zeros(T, nt),
+		zeros(T, nt),
+	)
+end
+
+"""
+    MovingTransportModelTwoPhase(grid, body1, u1ω, u1γ, u2ω, u2γ; source1, source2, body2, bc_border1, bc_border2, layout, periodic1, periodic2, scheme, wγ, geom_method)
+
+Build a moving two-phase transport model.
+
+- If `body2` is omitted, phase 2 uses `-body1`.
+- `wγ` is the interface geometry velocity sampled on `C_γ`.
+- Per-step slab caches (`cap*_slab`, `ops*_slab`, `V*n`, `V*n1`) are updated by moving assembly.
+"""
+function MovingTransportModelTwoPhase(
+	grid::CartesianGrid{N,T},
+	body1,
+	u1ω,
+	u1γ,
+	u2ω,
+	u2γ;
+	wγ=ntuple(_ -> zero(T), N),
+	source1=((args...) -> zero(T)),
+	source2=((args...) -> zero(T)),
+	body2=nothing,
+	bc_border1::BorderConditions=BorderConditions(),
+	bc_border2::BorderConditions=BorderConditions(),
+	layout=layout_two_phase(prod(grid.n)),
+	periodic1::NTuple{N,Bool}=periodic_flags(bc_border1, N),
+	periodic2::NTuple{N,Bool}=periodic_flags(bc_border2, N),
+	scheme::AdvectionScheme=Centered(),
+	geom_method::Symbol=:vofijul,
+) where {N,T}
+	nt = prod(grid.n)
+	return MovingTransportModelTwoPhase{
+		N,T,
+		typeof(body1),typeof(body2),
+		typeof(u1ω),typeof(u1γ),typeof(u2ω),typeof(u2γ),typeof(wγ),
+		typeof(source1),typeof(source2),
+		typeof(bc_border1),typeof(bc_border2),
+		typeof(layout),typeof(scheme),
+	}(
+		grid,
+		body1,
+		body2,
+		u1ω,
+		u1γ,
+		u2ω,
+		u2γ,
+		wγ,
+		source1,
+		source2,
+		bc_border1,
+		bc_border2,
+		layout,
+		periodic1,
+		periodic2,
+		scheme,
+		geom_method,
+		nothing,
+		nothing,
+		nothing,
+		nothing,
+		zeros(T, nt),
+		zeros(T, nt),
+		zeros(T, nt),
+		zeros(T, nt),
+	)
+end
+
 function _source_values(cap::AssembledCapacity{N,T}, source, t::T) where {N,T}
 	out = Vector{T}(undef, cap.ntotal)
 	@inbounds for i in eachindex(out)
@@ -281,6 +470,183 @@ end
 
 function _velocity_values(cap::AssembledCapacity{N,T}, uω, uγ, t::T) where {N,T}
 	return _velocity_tuple_values(cap, uω, cap.C_ω, t), _velocity_tuple_values(cap, uγ, cap.C_γ, t)
+end
+
+function _relative_interface_velocity(
+	uγ::NTuple{N,Vector{T}},
+	wγ::NTuple{N,Vector{T}},
+) where {N,T}
+	return ntuple(d -> uγ[d] .- wγ[d], N)
+end
+
+_relative_speed_atol(::Type{T}) where {T} = convert(T, 100) * eps(T)
+
+function _eval_levelset_time(body, x::SVector{N,T}, t::T) where {N,T}
+	if applicable(body, x..., t)
+		return convert(T, body(x..., t))
+	elseif applicable(body, x...)
+		return convert(T, body(x...))
+	end
+	throw(ArgumentError("level-set callback must accept (x...) or (x..., t)"))
+end
+
+function _space_moments_at_time(
+	model::MovingTransportModelMono{N,T},
+	xyz_space::NTuple{N,AbstractVector{T}},
+	t::T,
+) where {N,T}
+	body_t = (x...) -> _eval_levelset_time(model.body, SVector{N,T}(x), t)
+	return geometric_moments(body_t, xyz_space, T, nan; method=model.geom_method)
+end
+
+function _phase_levelset_value(model::MovingTransportModelTwoPhase{N,T}, phase::Int, x::SVector{N,T}, t::T) where {N,T}
+	if phase == 1
+		return _eval_levelset_time(model.body1, x, t)
+	elseif phase == 2
+		if model.body2 === nothing
+			return -_eval_levelset_time(model.body1, x, t)
+		end
+		return _eval_levelset_time(model.body2, x, t)
+	end
+	throw(ArgumentError("phase must be 1 or 2"))
+end
+
+function _space_moments_at_time(
+	model::MovingTransportModelTwoPhase{N,T},
+	xyz_space::NTuple{N,AbstractVector{T}},
+	t::T,
+	phase::Int,
+) where {N,T}
+	body_t = (x...) -> _phase_levelset_value(model, phase, SVector{N,T}(x), t)
+	return geometric_moments(body_t, xyz_space, T, nan; method=model.geom_method)
+end
+
+function _slice_spacetime_to_space(
+	vec_st::AbstractVector,
+	nn_space::NTuple{N,Int},
+	nt::Int,
+	it::Int,
+) where {N}
+	dims_st = (nn_space..., nt)
+	li_st = LinearIndices(dims_st)
+	li_sp = LinearIndices(nn_space)
+	out = similar(vec_st, prod(nn_space))
+	@inbounds for I in CartesianIndices(nn_space)
+		out[li_sp[I]] = vec_st[li_st[Tuple(I)..., it]]
+	end
+	return out
+end
+
+function _reduce_slab_to_space(
+	m_st::GeometricMoments{N1,T},
+	nn_space::NTuple{N,Int},
+) where {N1,N,T}
+	N1 == N + 1 || throw(ArgumentError("expected slab moments dimension $(N + 1), got $N1"))
+	nt = length(m_st.xyz[N1])
+	nt == 2 || throw(ArgumentError("space-time reduction expects 2 time nodes, got $nt"))
+
+	V = _slice_spacetime_to_space(m_st.V, nn_space, nt, 1)
+	Γ = _slice_spacetime_to_space(m_st.interface_measure, nn_space, nt, 1)
+	ctype = _slice_spacetime_to_space(m_st.cell_type, nn_space, nt, 1)
+	A = ntuple(d -> _slice_spacetime_to_space(m_st.A[d], nn_space, nt, 1), N)
+	B = ntuple(d -> _slice_spacetime_to_space(m_st.B[d], nn_space, nt, 1), N)
+	W = ntuple(d -> _slice_spacetime_to_space(m_st.W[d], nn_space, nt, 1), N)
+
+	bary_st = _slice_spacetime_to_space(m_st.barycenter, nn_space, nt, 1)
+	baryγ_st = _slice_spacetime_to_space(m_st.barycenter_interface, nn_space, nt, 1)
+	nγ_st = _slice_spacetime_to_space(m_st.interface_normal, nn_space, nt, 1)
+
+	bary = Vector{SVector{N,T}}(undef, length(V))
+	baryγ = Vector{SVector{N,T}}(undef, length(V))
+	nγ = Vector{SVector{N,T}}(undef, length(V))
+	@inbounds for i in eachindex(V)
+		bi = bary_st[i]
+		bγi = baryγ_st[i]
+		ni = nγ_st[i]
+		bary[i] = SVector{N,T}(ntuple(d -> bi[d], N))
+		baryγ[i] = SVector{N,T}(ntuple(d -> bγi[d], N))
+		nγ[i] = SVector{N,T}(ntuple(d -> ni[d], N))
+	end
+
+	xyz = ntuple(d -> collect(T, m_st.xyz[d]), N)
+	return GeometricMoments(V, bary, Γ, ctype, baryγ, nγ, A, B, W, xyz)
+end
+
+function _build_moving_slab!(
+	model::MovingTransportModelMono{N,T},
+	t::T,
+	dt::T,
+) where {N,T}
+	xyz_space = grid1d(model.grid)
+	moms_n = _space_moments_at_time(model, xyz_space, t)
+	moms_n1 = _space_moments_at_time(model, xyz_space, t + dt)
+
+	stgrid = SpaceTimeCartesianGrid(model.grid, T[t, t + dt])
+	xyz_st = grid1d(stgrid)
+	body_st = (x...) -> begin
+		xs = SVector{N,T}(ntuple(d -> convert(T, x[d]), N))
+		_eval_levelset_time(model.body, xs, convert(T, x[N + 1]))
+	end
+	moms_st = geometric_moments(body_st, xyz_st, T, nan; method=model.geom_method)
+	moms_slab = _reduce_slab_to_space(moms_st, model.grid.n)
+	cap_slab = assembled_capacity(moms_slab; bc=zero(T))
+	uωv, uγv = _velocity_values(cap_slab, model.uω, model.uγ, t)
+	wγv = _velocity_tuple_values(cap_slab, model.wγ, cap_slab.C_γ, t)
+	uγrel = _relative_interface_velocity(uγv, wγv)
+	ops_slab = advection_ops(cap_slab, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
+
+	model.cap_slab = cap_slab
+	model.ops_slab = ops_slab
+	model.Vn .= moms_n.V
+	model.Vn1 .= moms_n1.V
+	return model
+end
+
+function _build_moving_slab!(
+	model::MovingTransportModelTwoPhase{N,T},
+	t::T,
+	dt::T,
+) where {N,T}
+	xyz_space = grid1d(model.grid)
+	moms1_n = _space_moments_at_time(model, xyz_space, t, 1)
+	moms1_n1 = _space_moments_at_time(model, xyz_space, t + dt, 1)
+	moms2_n = _space_moments_at_time(model, xyz_space, t, 2)
+	moms2_n1 = _space_moments_at_time(model, xyz_space, t + dt, 2)
+
+	stgrid = SpaceTimeCartesianGrid(model.grid, T[t, t + dt])
+	xyz_st = grid1d(stgrid)
+	body1_st = (x...) -> begin
+		xs = SVector{N,T}(ntuple(d -> convert(T, x[d]), N))
+		_phase_levelset_value(model, 1, xs, convert(T, x[N + 1]))
+	end
+	body2_st = (x...) -> begin
+		xs = SVector{N,T}(ntuple(d -> convert(T, x[d]), N))
+		_phase_levelset_value(model, 2, xs, convert(T, x[N + 1]))
+	end
+	moms1_st = geometric_moments(body1_st, xyz_st, T, nan; method=model.geom_method)
+	moms2_st = geometric_moments(body2_st, xyz_st, T, nan; method=model.geom_method)
+	moms1_slab = _reduce_slab_to_space(moms1_st, model.grid.n)
+	moms2_slab = _reduce_slab_to_space(moms2_st, model.grid.n)
+
+	cap1_slab = assembled_capacity(moms1_slab; bc=zero(T))
+	cap2_slab = assembled_capacity(moms2_slab; bc=zero(T))
+	u1ωv, u1γv = _velocity_values(cap1_slab, model.u1ω, model.u1γ, t)
+	u2ωv, u2γv = _velocity_values(cap2_slab, model.u2ω, model.u2γ, t)
+	wγv = _velocity_tuple_values(cap1_slab, model.wγ, cap1_slab.C_γ, t)
+	u1γrel = _relative_interface_velocity(u1γv, wγv)
+	u2γrel = _relative_interface_velocity(u2γv, wγv)
+	ops1_slab = advection_ops(cap1_slab, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
+	ops2_slab = advection_ops(cap2_slab, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
+
+	model.cap1_slab = cap1_slab
+	model.ops1_slab = ops1_slab
+	model.cap2_slab = cap2_slab
+	model.ops2_slab = ops2_slab
+	model.V1n .= moms1_n.V
+	model.V1n1 .= moms1_n1.V
+	model.V2n .= moms2_n.V
+	model.V2n1 .= moms2_n1.V
+	return model
 end
 
 function _value_time_dependent(v, x::SVector{N,T}) where {N,T}
@@ -517,6 +883,56 @@ function _interface_closure(
 	return spdiagm(0 => a21), spdiagm(0 => a22), b2
 end
 
+function _is_relative_inflow(λ::T, scale::T) where {T}
+	tol = _relative_speed_atol(T) * max(one(T), scale)
+	return λ < -tol
+end
+
+function _interface_closure_moving(
+	model::MovingTransportModelMono{N,T},
+	cap::AssembledCapacity{N,T},
+	uγ::NTuple{N,Vector{T}},
+	wγ::NTuple{N,Vector{T}},
+	t::T,
+) where {N,T}
+	nt = cap.ntotal
+	a21 = zeros(T, nt)
+	a22 = zeros(T, nt)
+	b2 = zeros(T, nt)
+	LI = LinearIndices(cap.nnodes)
+
+	for I in CartesianIndices(cap.nnodes)
+		lin = LI[I]
+		any(d -> I[d] == cap.nnodes[d], 1:N) && continue
+		Γ = cap.buf.Γ[lin]
+		if !(isfinite(Γ) && Γ > zero(T))
+			continue
+		end
+
+		λ = zero(T)
+		scale = zero(T)
+		@inbounds for d in 1:N
+			ud = uγ[d][lin]
+			wd = wγ[d][lin]
+			λ += (ud - wd) * cap.n_γ[lin][d]
+			scale += abs(ud) + abs(wd)
+		end
+
+		if _is_relative_inflow(λ, scale)
+			g = _interface_inflow_value(model.bc_interface, cap.C_γ[lin], t)
+			if g !== nothing
+				a22[lin] = Γ
+				b2[lin] = Γ * g
+				continue
+			end
+		end
+		a21[lin] = -Γ
+		a22[lin] = Γ
+	end
+
+	return spdiagm(0 => a21), spdiagm(0 => a22), b2
+end
+
 function _interface_closure_two_phase(
 	model::TransportModelTwoPhase{N,T},
 	u1γ::NTuple{N,Vector{T}},
@@ -574,6 +990,89 @@ function _interface_closure_two_phase(
 			b44[lin] = Γ * s2
 		else
 			# both outflow: continuity on each phase
+			b21[lin] = -Γ
+			b22[lin] = Γ
+			b43[lin] = -Γ
+			b44[lin] = Γ
+		end
+	end
+
+	return (
+		spdiagm(0 => b21), spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
+		spdiagm(0 => b41), spdiagm(0 => b42), spdiagm(0 => b43), spdiagm(0 => b44),
+		rhs2, rhs4,
+	)
+end
+
+function _interface_closure_two_phase_moving(
+	model::MovingTransportModelTwoPhase{N,T},
+	cap1::AssembledCapacity{N,T},
+	cap2::AssembledCapacity{N,T},
+	u1γ::NTuple{N,Vector{T}},
+	u2γ::NTuple{N,Vector{T}},
+	wγ::NTuple{N,Vector{T}},
+	t::T,
+) where {N,T}
+	_ = t
+	nt = cap1.ntotal
+	b21 = zeros(T, nt)
+	b22 = zeros(T, nt)
+	b23 = zeros(T, nt)
+	b24 = zeros(T, nt)
+	b41 = zeros(T, nt)
+	b42 = zeros(T, nt)
+	b43 = zeros(T, nt)
+	b44 = zeros(T, nt)
+	rhs2 = zeros(T, nt)
+	rhs4 = zeros(T, nt)
+
+	LI = LinearIndices(cap1.nnodes)
+	for I in CartesianIndices(cap1.nnodes)
+		lin = LI[I]
+		any(d -> I[d] == cap1.nnodes[d], 1:N) && continue
+
+		Γ1 = cap1.buf.Γ[lin]
+		Γ2 = cap2.buf.Γ[lin]
+		have_iface = (isfinite(Γ1) && Γ1 > zero(T)) || (isfinite(Γ2) && Γ2 > zero(T))
+		have_iface || continue
+
+		tol = convert(T, 100) * eps(T) * max(one(T), abs(Γ1), abs(Γ2))
+		abs(Γ1 - Γ2) <= tol || throw(ArgumentError("interface measure mismatch at cell $lin: Γ1=$Γ1 Γ2=$Γ2"))
+		Γ = convert(T, 0.5) * (Γ1 + Γ2)
+		(isfinite(Γ) && Γ > zero(T)) || continue
+
+		λ1 = zero(T)
+		λ2 = zero(T)
+		scale1 = zero(T)
+		scale2 = zero(T)
+		@inbounds for d in 1:N
+			wd = wγ[d][lin]
+			u1d = u1γ[d][lin]
+			u2d = u2γ[d][lin]
+			λ1 += (u1d - wd) * cap1.n_γ[lin][d]
+			λ2 += (u2d - wd) * cap2.n_γ[lin][d]
+			scale1 += abs(u1d) + abs(wd)
+			scale2 += abs(u2d) + abs(wd)
+		end
+		in1 = _is_relative_inflow(λ1, scale1)
+		in2 = _is_relative_inflow(λ2, scale2)
+
+		if in1 && in2
+			throw(ArgumentError("moving two-phase transport interface is locally ill-posed (both-inflow local configuration from relative speeds) at Γ cell $lin"))
+		elseif in1 && !in2
+			# gamma1 row: relative-flux continuity; gamma2 row: phase-2 outflow closure
+			b22[lin] = Γ * λ1
+			b24[lin] = Γ * λ2
+			b43[lin] = -Γ
+			b44[lin] = Γ
+		elseif in2 && !in1
+			# gamma2 row: relative-flux continuity; gamma1 row: phase-1 outflow closure
+			b21[lin] = -Γ
+			b22[lin] = Γ
+			b42[lin] = Γ * λ1
+			b44[lin] = Γ * λ2
+		else
+			# both relative-outflow (or near zero): continuity on each phase
 			b21[lin] = -Γ
 			b22[lin] = Γ
 			b43[lin] = -Γ
@@ -848,6 +1347,13 @@ function _resolve_theta(scheme)::Float64
 	throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]"))
 end
 
+function _psi_functions(::Type{T}, θ::T) where {T}
+	(zero(T) <= θ <= one(T)) || throw(ArgumentError("numeric θ must satisfy 0 ≤ θ ≤ 1"))
+	psip = (Vn, Vn1) -> (iszero(Vn) && iszero(Vn1) ? zero(T) : θ)
+	psim = (Vn, Vn1) -> (iszero(Vn) && iszero(Vn1) ? zero(T) : (one(T) - θ))
+	return psip, psim
+end
+
 function _init_unsteady_state_mono(model::TransportModelMono{N,T}, u0) where {N,T}
 	lay = model.layout.offsets
 	nt = model.cap.ntotal
@@ -892,6 +1398,52 @@ end
 
 function _init_unsteady_state_two_phase(model::TransportModelTwoPhase{N,T}, u0) where {N,T}
 	return _as_full_state_two_phase(model, u0)
+end
+
+function _as_full_state_two_phase_moving(model::MovingTransportModelTwoPhase{N,T}, u0) where {N,T}
+	lay = model.layout
+	nt = prod(model.grid.n)
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	u = zeros(T, nsys)
+
+	if u0 isa Tuple
+		length(u0) == 2 || throw(DimensionMismatch("tuple initial state must be (u01, u02)"))
+		length(u0[1]) == nt || throw(DimensionMismatch("u01 length must be $nt"))
+		length(u0[2]) == nt || throw(DimensionMismatch("u02 length must be $nt"))
+		u[lay.ω1] .= Vector{T}(u0[1])
+		u[lay.ω2] .= Vector{T}(u0[2])
+		return u
+	end
+
+	len = length(u0)
+	if len == nsys
+		u .= Vector{T}(u0)
+	elseif len == 2 * nt
+		u[lay.ω1] .= Vector{T}(u0[1:nt])
+		u[lay.ω2] .= Vector{T}(u0[(nt + 1):(2 * nt)])
+	else
+		throw(DimensionMismatch("u0 must be length $nsys (full state), length $(2 * nt) (ω blocks concatenated), or tuple (u01, u02)"))
+	end
+	return u
+end
+
+function _init_unsteady_state_moving(model::MovingTransportModelMono{N,T}, u0) where {N,T}
+	lay = model.layout.offsets
+	nt = prod(model.grid.n)
+	nsys = maximum((last(lay.ω), last(lay.γ)))
+	u = zeros(T, nsys)
+	if length(u0) == nsys
+		u .= Vector{T}(u0)
+	elseif length(u0) == nt
+		u[lay.ω] .= Vector{T}(u0)
+	else
+		throw(DimensionMismatch("u0 length must be $nt (ω block) or $nsys (full system)"))
+	end
+	return u
+end
+
+function _init_unsteady_state_moving(model::MovingTransportModelTwoPhase{N,T}, u0) where {N,T}
+	return _as_full_state_two_phase_moving(model, u0)
 end
 
 """
@@ -984,6 +1536,218 @@ function assemble_unsteady_two_phase!(
 	_insert_vec!(sys.b, lay.ω2, M2 .* Vector{T}(ufull[lay.ω2]))
 
 	active_rows = _two_phase_row_activity(model.cap1, model.cap2, lay)
+	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
+	sys.cache = nothing
+	return sys
+end
+
+"""
+    assemble_unsteady_mono_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)
+
+Assemble one moving-geometry monophasic theta-method step on slab `[t, t+dt]`.
+Embedded-interface inflow/outflow switching uses relative speed `(uγ - wγ)·nγ`.
+"""
+function assemble_unsteady_mono_moving!(
+	sys::LinearSystem{T},
+	model::MovingTransportModelMono{N,T},
+	uⁿ,
+	t::T,
+	dt::T,
+	scheme_or_theta,
+) where {N,T}
+	dt > zero(T) || throw(ArgumentError("dt must be positive"))
+	θ = convert(T, _resolve_theta(scheme_or_theta))
+	psip, psim = _psi_functions(T, θ)
+	tθ = t + θ * dt
+
+	_build_moving_slab!(model, t, dt)
+	cap = model.cap_slab
+	cap === nothing && throw(ArgumentError("missing slab capacity cache"))
+	uωv, uγv = _velocity_values(cap, model.uω, model.uγ, tθ)
+	wγv = _velocity_tuple_values(cap, model.wγ, cap.C_γ, tθ)
+	uγrel = _relative_interface_velocity(uγv, wγv)
+	ops = advection_ops(cap, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
+	model.ops_slab = ops
+
+	lay = model.layout.offsets
+	_validate_mono_layout(cap, lay)
+	nt = cap.ntotal
+	nsys = maximum((last(lay.ω), last(lay.γ)))
+
+	ufull = if length(uⁿ) == nsys
+		Vector{T}(uⁿ)
+	elseif length(uⁿ) == nt
+		v = zeros(T, nsys)
+		v[lay.ω] .= Vector{T}(uⁿ)
+		v
+	else
+		v = zeros(T, nsys)
+		v[lay.ω] .= Vector{T}(uⁿ[lay.ω])
+		if length(uⁿ) >= last(lay.γ)
+			v[lay.γ] .= Vector{T}(uⁿ[lay.γ])
+		end
+		v
+	end
+
+	conv_bulk = reduce(+, ops.C)
+	conv_iface = convert(T, 0.5) * reduce(+, ops.K)
+	Adv11 = conv_bulk + conv_iface
+	Adv12 = conv_iface
+	fω = _source_values(cap, model.source, tθ)
+	A21, A22, b2 = _interface_closure_moving(model, cap, uγv, wγv, tθ)
+
+	M1 = spdiagm(0 => model.Vn1)
+	M0 = spdiagm(0 => model.Vn)
+	Ψp = spdiagm(0 => T[psip(model.Vn[i], model.Vn1[i]) for i in 1:nt])
+	Ψm = spdiagm(0 => T[psim(model.Vn[i], model.Vn1[i]) for i in 1:nt])
+
+	# Geometric sweep is represented by Vn1-Vn; no standalone geometry term is added.
+	A11 = M1 + Adv11 * Ψp
+	A12 = -(M1 - M0) + Adv12 * Ψp
+
+	uω = Vector{T}(ufull[lay.ω])
+	uγ = Vector{T}(ufull[lay.γ])
+	b1 = (M0 - Adv11 * Ψm) * uω
+	b1 .-= (Adv12 * Ψm) * uγ
+	b1 .+= cap.V * fω
+
+	A, b = if _is_canonical_mono_layout(lay, nt)
+		([A11 A12; A21 A22], vcat(b1, b2))
+	else
+		Awork = spzeros(T, nsys, nsys)
+		bwork = zeros(T, nsys)
+		_insert_block!(Awork, lay.ω, lay.ω, A11)
+		_insert_block!(Awork, lay.ω, lay.γ, A12)
+		_insert_block!(Awork, lay.γ, lay.ω, A21)
+		_insert_block!(Awork, lay.γ, lay.γ, A22)
+		_insert_vec!(bwork, lay.ω, b1)
+		_insert_vec!(bwork, lay.γ, b2)
+		(Awork, bwork)
+	end
+
+	sys.A = A
+	sys.b = b
+	length(sys.x) == nsys || (sys.x = zeros(T, nsys))
+	sys.cache = nothing
+
+	apply_box_bc_transport_mono!(sys.A, sys.b, cap, uωv, model.bc_border, model.scheme; t=tθ, ωrows=lay.ω)
+	active_rows = _mono_row_activity(cap, lay)
+	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
+
+	sys.cache = nothing
+	return sys
+end
+
+"""
+    assemble_unsteady_two_phase_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)
+
+Assemble one moving-geometry two-phase theta-method step on slab `[t, t+dt]`.
+Embedded-interface inflow/outflow switching uses relative speeds against `wγ`.
+"""
+function assemble_unsteady_two_phase_moving!(
+	sys::LinearSystem{T},
+	model::MovingTransportModelTwoPhase{N,T},
+	uⁿ,
+	t::T,
+	dt::T,
+	scheme_or_theta,
+) where {N,T}
+	dt > zero(T) || throw(ArgumentError("dt must be positive"))
+	θ = convert(T, _resolve_theta(scheme_or_theta))
+	psip, psim = _psi_functions(T, θ)
+	tθ = t + θ * dt
+
+	_build_moving_slab!(model, t, dt)
+	cap1 = model.cap1_slab
+	cap2 = model.cap2_slab
+	cap1 === nothing && throw(ArgumentError("missing phase-1 slab capacity cache"))
+	cap2 === nothing && throw(ArgumentError("missing phase-2 slab capacity cache"))
+	_validate_two_phase_caps(cap1, cap2)
+
+	u1ωv, u1γv = _velocity_values(cap1, model.u1ω, model.u1γ, tθ)
+	u2ωv, u2γv = _velocity_values(cap2, model.u2ω, model.u2γ, tθ)
+	wγv = _velocity_tuple_values(cap1, model.wγ, cap1.C_γ, tθ)
+	u1γrel = _relative_interface_velocity(u1γv, wγv)
+	u2γrel = _relative_interface_velocity(u2γv, wγv)
+	ops1 = advection_ops(cap1, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
+	ops2 = advection_ops(cap2, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
+	model.ops1_slab = ops1
+	model.ops2_slab = ops2
+
+	lay = model.layout
+	_validate_two_phase_layout(cap1, cap2, lay)
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+	nt = cap1.ntotal
+	ufull = _as_full_state_two_phase_moving(model, uⁿ)
+
+	conv_bulk1 = reduce(+, ops1.C)
+	conv_iface1 = convert(T, 0.5) * reduce(+, ops1.K)
+	Adv11 = conv_bulk1 + conv_iface1
+	Adv12 = conv_iface1
+	f1 = _source_values(cap1, model.source1, tθ)
+
+	conv_bulk2 = reduce(+, ops2.C)
+	conv_iface2 = convert(T, 0.5) * reduce(+, ops2.K)
+	Adv33 = conv_bulk2 + conv_iface2
+	Adv34 = conv_iface2
+	f2 = _source_values(cap2, model.source2, tθ)
+
+	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 =
+		_interface_closure_two_phase_moving(model, cap1, cap2, u1γv, u2γv, wγv, tθ)
+
+	M1n1 = spdiagm(0 => model.V1n1)
+	M1n = spdiagm(0 => model.V1n)
+	M2n1 = spdiagm(0 => model.V2n1)
+	M2n = spdiagm(0 => model.V2n)
+	Ψ1p = spdiagm(0 => T[psip(model.V1n[i], model.V1n1[i]) for i in 1:nt])
+	Ψ1m = spdiagm(0 => T[psim(model.V1n[i], model.V1n1[i]) for i in 1:nt])
+	Ψ2p = spdiagm(0 => T[psip(model.V2n[i], model.V2n1[i]) for i in 1:nt])
+	Ψ2m = spdiagm(0 => T[psim(model.V2n[i], model.V2n1[i]) for i in 1:nt])
+
+	# Geometric sweep is represented by Vn1-Vn; no standalone geometry term is added.
+	A11 = M1n1 + Adv11 * Ψ1p
+	A12 = -(M1n1 - M1n) + Adv12 * Ψ1p
+	A33 = M2n1 + Adv33 * Ψ2p
+	A34 = -(M2n1 - M2n) + Adv34 * Ψ2p
+
+	uω1 = Vector{T}(ufull[lay.ω1])
+	uγ1 = Vector{T}(ufull[lay.γ1])
+	uω2 = Vector{T}(ufull[lay.ω2])
+	uγ2 = Vector{T}(ufull[lay.γ2])
+	b1 = (M1n - Adv11 * Ψ1m) * uω1
+	b1 .-= (Adv12 * Ψ1m) * uγ1
+	b1 .+= cap1.V * f1
+	b3 = (M2n - Adv33 * Ψ2m) * uω2
+	b3 .-= (Adv34 * Ψ2m) * uγ2
+	b3 .+= cap2.V * f2
+
+	A = spzeros(T, nsys, nsys)
+	b = zeros(T, nsys)
+	_insert_block!(A, lay.ω1, lay.ω1, A11)
+	_insert_block!(A, lay.ω1, lay.γ1, A12)
+	_insert_block!(A, lay.γ1, lay.ω1, B21)
+	_insert_block!(A, lay.γ1, lay.γ1, B22)
+	_insert_block!(A, lay.γ1, lay.ω2, B23)
+	_insert_block!(A, lay.γ1, lay.γ2, B24)
+	_insert_block!(A, lay.ω2, lay.ω2, A33)
+	_insert_block!(A, lay.ω2, lay.γ2, A34)
+	_insert_block!(A, lay.γ2, lay.ω1, B41)
+	_insert_block!(A, lay.γ2, lay.γ1, B42)
+	_insert_block!(A, lay.γ2, lay.ω2, B43)
+	_insert_block!(A, lay.γ2, lay.γ2, B44)
+	_insert_vec!(b, lay.ω1, b1)
+	_insert_vec!(b, lay.γ1, b2)
+	_insert_vec!(b, lay.ω2, b3)
+	_insert_vec!(b, lay.γ2, b4)
+
+	sys.A = A
+	sys.b = b
+	length(sys.x) == nsys || (sys.x = zeros(T, nsys))
+	sys.cache = nothing
+
+	apply_box_bc_transport_mono!(sys.A, sys.b, cap1, u1ωv, model.bc_border1, model.scheme; t=tθ, ωrows=lay.ω1)
+	apply_box_bc_transport_mono!(sys.A, sys.b, cap2, u2ωv, model.bc_border2, model.scheme; t=tθ, ωrows=lay.ω2)
+	active_rows = _two_phase_row_activity(cap1, cap2, lay)
 	sys.A, sys.b = _apply_row_identity_constraints!(sys.A, sys.b, active_rows)
 	sys.cache = nothing
 	return sys
@@ -1274,6 +2038,97 @@ function solve_unsteady!(
 	while t < tend - tol
 		dt_step = min(dt, tend - t)
 		assemble_unsteady_two_phase!(sys, model, u, t, dt_step, θ)
+		solve!(sys; method=method, reuse_factorization=false, kwargs...)
+		u .= sys.x
+		t += dt_step
+		push!(times, t)
+		save_history && push!(states, copy(u))
+	end
+	if !save_history
+		states = [copy(u)]
+		times = T[t]
+	end
+	return (times=times, states=states, system=sys, reused_constant_operator=false)
+end
+
+"""
+    solve_unsteady_moving!(model, u0, tspan; dt, scheme=:BE, method=:direct, save_history=true, kwargs...)
+
+Time-integrate moving mono or moving two-phase transport.
+Accepted `scheme` values are `:BE`, `:CN`, or numeric `theta` in `[0,1]`.
+Returns `(times, states, system, reused_constant_operator=false)`.
+"""
+function solve_unsteady_moving!(
+	model::MovingTransportModelMono{N,T},
+	u0,
+	tspan::Tuple{T,T};
+	dt::T,
+	scheme=:BE,
+	method::Symbol=:direct,
+	save_history::Bool=true,
+	kwargs...,
+) where {N,T}
+	t0, tend = tspan
+	tend >= t0 || throw(ArgumentError("tspan must satisfy tend >= t0"))
+	dt > zero(T) || throw(ArgumentError("dt must be positive"))
+	_resolve_theta(scheme) # validate once at entry
+
+	u = _init_unsteady_state_moving(model, u0)
+	lay = model.layout.offsets
+	nsys = maximum((last(lay.ω), last(lay.γ)))
+
+	times = T[t0]
+	states = Vector{Vector{T}}()
+	save_history && push!(states, copy(u))
+
+	sys = LinearSystem(spzeros(T, nsys, nsys), zeros(T, nsys); x=copy(u))
+	tol = sqrt(eps(T)) * max(one(T), abs(t0), abs(tend))
+	t = t0
+	while t < tend - tol
+		dt_step = min(dt, tend - t)
+		assemble_unsteady_mono_moving!(sys, model, u, t, dt_step, scheme)
+		solve!(sys; method=method, reuse_factorization=false, kwargs...)
+		u .= sys.x
+		t += dt_step
+		push!(times, t)
+		save_history && push!(states, copy(u))
+	end
+	if !save_history
+		states = [copy(u)]
+		times = T[t]
+	end
+	return (times=times, states=states, system=sys, reused_constant_operator=false)
+end
+
+function solve_unsteady_moving!(
+	model::MovingTransportModelTwoPhase{N,T},
+	u0,
+	tspan::Tuple{T,T};
+	dt::T,
+	scheme=:BE,
+	method::Symbol=:direct,
+	save_history::Bool=true,
+	kwargs...,
+) where {N,T}
+	t0, tend = tspan
+	tend >= t0 || throw(ArgumentError("tspan must satisfy tend >= t0"))
+	dt > zero(T) || throw(ArgumentError("dt must be positive"))
+	_resolve_theta(scheme) # validate once at entry
+
+	u = _init_unsteady_state_moving(model, u0)
+	lay = model.layout
+	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+
+	times = T[t0]
+	states = Vector{Vector{T}}()
+	save_history && push!(states, copy(u))
+
+	sys = LinearSystem(spzeros(T, nsys, nsys), zeros(T, nsys); x=copy(u))
+	tol = sqrt(eps(T)) * max(one(T), abs(t0), abs(tend))
+	t = t0
+	while t < tend - tol
+		dt_step = min(dt, tend - t)
+		assemble_unsteady_two_phase_moving!(sys, model, u, t, dt_step, scheme)
 		solve!(sys; method=method, reuse_factorization=false, kwargs...)
 		u .= sys.x
 		t += dt_step

@@ -1,6 +1,6 @@
 # PenguinTransport.jl
 
-`PenguinTransport.jl` solves cut-cell advection transport problems on Cartesian grids with fixed embedded interfaces. It provides mono and two-phase models in steady and unsteady form, with assembly and solve wrappers designed to stay close to the underlying block system.
+`PenguinTransport.jl` solves cut-cell advection transport problems on Cartesian grids with fixed and moving embedded interfaces. It provides mono and two-phase models, with fixed-geometry steady/unsteady assembly and moving-geometry unsteady slab assembly.
 
 The conservative transport equation is:
 
@@ -28,6 +28,8 @@ Within PenguinxCutCell, `PenguinTransport.jl` sits on top of:
 | Models | Monophase unsteady | Implemented | Theta-form assembly via `assemble_unsteady_mono!` |
 | Models | Twophase steady | Implemented | `TransportModelTwoPhase` + `assemble_steady_two_phase!` |
 | Models | Twophase unsteady | Implemented | Theta-form assembly via `assemble_unsteady_two_phase!` |
+| Models | Moving monophase unsteady | Implemented | `MovingTransportModelMono` + `assemble_unsteady_mono_moving!` |
+| Models | Moving twophase unsteady | Implemented | `MovingTransportModelTwoPhase` + `assemble_unsteady_two_phase_moving!` |
 | Advection | Centered scheme | Implemented | `Centered()` spatial discretization |
 | Advection | Upwind scheme | Implemented | `Upwind1()` first-order upwind |
 | Time schemes | Backward Euler | Implemented | `theta=1` |
@@ -36,7 +38,7 @@ Within PenguinxCutCell, `PenguinTransport.jl` sits on top of:
 | Outer BCs | Inflow | Implemented | Dirichlet-type boundary condition |
 | Outer BCs | Outflow | Implemented | Neumann-type boundary condition |
 | Outer BCs | Periodic | Implemented | Periodic boundary condition |
-| Embedded interface | Sign-based closure | Implemented | From `s = uγ·nγ` (inflow Dirichlet or continuity) |
+| Embedded interface | Sign-based closure | Implemented | Fixed: `s = uγ·nγ`; Moving: `λ = (uγ-wγ)·nγ` |
 
 
 ## Pages
@@ -67,6 +69,8 @@ uγ = (ones(nt),)
 model = TransportModelMono(cap, uω, uγ; bc_border=bc, scheme=Centered())
 res = solve_unsteady!(model, zeros(nt), (0.0, 0.2); dt=0.01, scheme=:CN)
 ```
+
+Moving quick-start APIs are `MovingTransportModelMono`, `MovingTransportModelTwoPhase`, and `solve_unsteady_moving!` (see [API](api.md) and [Examples](examples.md)).
 
 ## Local Docs Build
 

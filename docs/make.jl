@@ -1,5 +1,6 @@
 using Documenter
 using PenguinTransport
+using CartesianGrids
 
 makedocs(
     modules = [PenguinTransport],

@@ -46,6 +46,24 @@ Unknown layout (fixed):
 x = [ φω1 ; φγ1 ; φω2 ; φγ2 ]
 ```
 
+### `MovingTransportModelMono(grid, body, uω, uγ; kwargs...)`
+### `MovingTransportModelTwoPhase(grid, body1, u1ω, u1γ, u2ω, u2γ; kwargs...)`
+
+Moving-geometry transport models using reduced space-time slabs.
+
+Key moving-only inputs:
+
+- moving level-set callback(s) (`body`, or `body1`/`body2`) with signature `(x..., t)` (or `(x...)` if static)
+- interface geometry velocity `wγ`
+- reduced slab caches and physical volumes are updated internally each step
+
+Unknown layouts are identical to fixed models:
+
+```text
+mono:      x = [ φω ; φγ ]
+two-phase: x = [ φω1 ; φγ1 ; φω2 ; φγ2 ]
+```
+
 ## Assembly Functions
 
 ### `assemble_steady_mono!(sys, model, t)`
@@ -70,6 +88,15 @@ Mutates `sys.A`, `sys.b` for one two-phase unsteady `θ` step.
 - `uⁿ` can be full state, concatenated `ω` blocks, or tuple `(u01, u02)`.
 - Accepted time schemes: `:BE`, `:CN`, numeric `θ` in `[0,1]`.
 
+### `assemble_unsteady_mono_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)`
+### `assemble_unsteady_two_phase_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)`
+
+Assemble one moving-geometry unsteady slab step.
+
+- Uses reduced slab capacities/operators on `[t, t+dt]`
+- Uses physical volumes `Vn`/`Vn1` in time terms
+- Uses relative interface speed for closure logic: `(uγ - wγ)·nγ`
+
 ## Solver Wrappers
 
 ### `solve_steady!(model; t=0, method=:direct, kwargs...)`
@@ -89,6 +116,10 @@ Important behavior:
 - Accepted time schemes are exactly `:BE`, `:CN`, or numeric `θ ∈ [0,1]`.
 - Invalid symbols or out-of-range `θ` raise `ArgumentError`.
 - Reuses constant operator/factorization when matrix/RHS are time-invariant.
+
+### `solve_unsteady_moving!(model, u0, tspan; dt, scheme=:BE, method=:direct, save_history=true, kwargs...)`
+
+Time-integrates moving mono or moving two-phase transport with the same scheme contract (`:BE`, `:CN`, or numeric `θ ∈ [0,1]`).
 
 ## Operator/Geometry Maintenance
 
@@ -116,12 +147,19 @@ All assume ordering `(ω1, γ1, ω2, γ2)`.
 ```@docs
 TransportModelMono
 TransportModelTwoPhase
+MovingTransportModelMono
+MovingTransportModelMono(::CartesianGrids.CartesianGrid, ::Any, ::Any, ::Any)
+MovingTransportModelTwoPhase
+MovingTransportModelTwoPhase(::CartesianGrids.CartesianGrid, ::Any, ::Any, ::Any, ::Any, ::Any)
 assemble_steady_mono!
 assemble_unsteady_mono!
 assemble_steady_two_phase!
 assemble_unsteady_two_phase!
+assemble_unsteady_mono_moving!
+assemble_unsteady_two_phase_moving!
 solve_steady!
 solve_unsteady!
+solve_unsteady_moving!
 update_advection_ops!
 rebuild!
 omega1_view

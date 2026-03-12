@@ -2,38 +2,32 @@
 
 ## 1. Discrete Unknown Layouts
 
-### Mono
+Mono:
 
 ```text
 x = [ φω ; φγ ]
 ```
 
-- `φω`: bulk (`ω`) unknowns, one per cut-cell control volume.
-- `φγ`: interface (`γ`) unknowns, one per interface control location.
-
-### Two-phase
+Two-phase:
 
 ```text
 x = [ φω1 ; φγ1 ; φω2 ; φγ2 ]
 ```
 
-This ordering is fixed by the public API and used by all assembly and solver paths.
+The two-phase ordering is fixed in all public APIs.
 
 ## 2. Core Advection Blocks
 
-`CartesianOperators.jl` provides advection operators from geometry + velocities. Assembly uses:
+`CartesianOperators.jl` provides cut-cell advection operators.
 
-- bulk advection contributions on `ω` rows,
-- interface advection/coupling contributions on `γ` rows.
+- `ω` rows receive bulk transport + source + (unsteady) time terms
+- `γ` rows enforce local embedded-interface closure
 
-At high level:
-
-- `ω` rows receive transport operator terms plus source and (for unsteady) mass terms,
-- `γ` rows enforce embedded-interface closure selected from local inflow/outflow signs.
+For moving models, interface transport/closure uses relative speed against `wγ`.
 
 ## 3. Steady Mono Assembly
 
-The assembled block system has the form:
+Block form:
 
 ```math
 \begin{bmatrix}
@@ -51,19 +45,13 @@ b_\gamma
 \end{bmatrix}.
 ```
 
-- `A11`, `A12`: bulk advection blocks from cut-cell operators.
-- `A21`, `A22`: interface closure rows (`Tγ=g` or `Tγ=Tω` depending on sign).
-- Outer BCs are then applied on `ω` rows via advection boundary logic (`Inflow/Outflow/Periodic`).
+- `A11`, `A12`: advection blocks
+- `A21`, `A22`: interface closure rows (`Tγ=g` inflow or `Tγ=Tω` continuity)
+- outer box BCs are then applied on `ω` rows
 
-## 4. Unsteady Mono `θ`-Assembly
+## 4. Unsteady Mono `θ` Assembly (Fixed)
 
-For one step `tⁿ -> tⁿ⁺¹`:
-
-1. Assemble steady operator at `tⁿ + θΔt`.
-2. If `θ < 1`, add previous-step transport correction on `ω` rows.
-3. Add mass diagonal `V/Δt` on `ω` rows.
-
-Equivalent structure:
+Fixed geometry uses the usual `θ` method on `ω` rows:
 
 ```math
 \left(\frac{V}{\Delta t} + \theta A\right)\phi^{n+1}
@@ -71,42 +59,55 @@ Equivalent structure:
 \frac{V}{\Delta t}\phi^n - (1-\theta)A\phi^n + b.
 ```
 
-`solve_unsteady!` reuses constant operators/factorizations when matrix and RHS are time-invariant.
+`solve_unsteady!` reuses constant operators when matrix/RHS are time-invariant.
 
-## 5. Steady Two-Phase Assembly
+## 5. Unsteady Mono Moving-Slab Assembly
 
-The global matrix is assembled in four blocks of unknowns `(ω1, γ1, ω2, γ2)`.
+Moving geometry uses reduced slab volumes `Vn`, `Vn1`:
 
-- `ω1`, `ω2` rows: per-phase advection + source + outer BC enforcement.
-- `γ1`, `γ2` rows: local interface closure selected from signs `s1 = uγ1·nγ1`, `s2 = uγ2·nγ2`.
+```math
+A_{11} = M_1 + A^{adv}_{11}\Psi_+, \qquad
+A_{12} = -(M_1-M_0) + A^{adv}_{12}\Psi_+,
+```
 
-Advection needs inflow data only. The implementation does not impose diffusion-style double interface constraints; it enforces one locally well-posed advection closure pattern per interface location.
+```math
+b_\omega = (M_0 - A^{adv}_{11}\Psi_-)\phi_\omega^n
+          - (A^{adv}_{12}\Psi_-)\phi_\gamma^n
+          + b_{src}.
+```
 
-## 6. Unsteady Two-Phase `θ`-Assembly
+with `M0=diag(Vn)`, `M1=diag(Vn1)`.
 
-The two-phase unsteady step mirrors mono, applied to both phase bulk blocks:
+The `-(M1-M0)` term carries the pure geometry sweep effect, so no extra standalone geometric flux term is added.
 
-- steady transport evaluated at `t + θΔt`,
-- `(1-θ)` previous-step correction on `ω1` and `ω2` rows,
-- mass diagonals `V1/Δt` and `V2/Δt` added to `ω1`/`ω2`.
+## 6. Steady/Unsteady Two-Phase (Fixed)
 
-Interface closure rows remain sign-selected at assembly time from interface velocities.
+Per-phase `ω` blocks are assembled like mono.
 
-Assumption for constant-operator reuse: velocity/source/boundary callbacks are time-invariant and `dt` is unchanged.
+`γ1`/`γ2` rows are selected locally from sign logic (`s1`, `s2`):
 
-## 7. Regularization and Inactive Rows
+- one inflow / one outflow: coupling row + outflow continuity row
+- both outflow: continuity on both
+- both inflow: rejected (ill-posed local closure)
 
-Inactive and halo rows are regularized to identity equations.
+## 7. Unsteady Two-Phase Moving-Slab
 
-Why:
+Same block philosophy as fixed two-phase, but with:
 
-- keeps matrix size/layout stable,
-- avoids dropping rows/columns across cut-cell topology,
-- preserves nonsingularity and robust solves in partially active regions.
+- per-phase moving time terms from `V1n/V1n1`, `V2n/V2n1`
+- interface sign logic based on relative speeds `λ1`, `λ2`
+- both-inflow rejection based on relative signs
 
-## 8. Practical Notes
+Outer box BC logic remains driven by bulk velocities `u1ω`, `u2ω` (not `wγ`).
 
-- `Centered()` is less diffusive and useful for smooth transport where mild dispersive oscillations are acceptable.
-- `Upwind1()` is more dissipative but safer around sharp fronts/discontinuities.
-- Conservation and sharpness trade off with scheme choice and time step.
-- Sign convention is consistent across assembly and solve wrappers; the same inflow-data sign wording is used in tests, theory docs, and README.
+## 8. Regularization / Inactive Rows
+
+Inactive and halo rows are forced to identity equations.
+
+This keeps matrix layouts stable and avoids singular systems as active topology changes.
+
+## 9. Practical Notes
+
+- `Centered()` is less diffusive but can oscillate near sharp fronts.
+- `Upwind1()` is more robust/monotone but diffusive.
+- For moving models, expect first-order-in-time behavior with `:BE`; `:CN` gives less temporal damping but follows the same validated `θ` contract.

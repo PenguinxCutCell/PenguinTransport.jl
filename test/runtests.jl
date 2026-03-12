@@ -4,6 +4,7 @@ using SparseArrays
 using Statistics
 using PenguinTransport
 using CartesianGeometry
+using CartesianGrids
 using CartesianOperators
 using PenguinSolverCore
 using PenguinBCs
@@ -115,6 +116,23 @@ function _linf_error_region(cap, u_num, u_exact, pred)
         used += 1
     end
     return err, used
+end
+
+function _l2_weighted_error(cap, u_num, u_exact)
+    V = cap.buf.V
+    LI = LinearIndices(cap.nnodes)
+    N = length(cap.nnodes)
+    num = 0.0
+    den = 0.0
+    for I in CartesianIndices(cap.nnodes)
+        lin = LI[I]
+        any(d -> I[d] == cap.nnodes[d], 1:N) && continue
+        v = V[lin]
+        (isfinite(v) && v > 0) || continue
+        num += v * (u_num[lin] - u_exact[lin])^2
+        den += v
+    end
+    return sqrt(num / max(den, eps(Float64)))
 end
 
 @testset "API contract regressions" begin
@@ -303,6 +321,411 @@ end
 
         # Current transport operator convention maps positive imposed inflow value g to -g in the solved scalar.
         @test maximum(abs.(ω[mask] .+ g)) < 1e-12
+    end
+end
+
+@testset "Moving-geometry transport regressions" begin
+    @testset "A. Moving mono frozen geometry matches fixed geometry" begin
+        grid_space = (range(0.0, 1.0; length=65),)
+        xγ = 0.53
+        body_space(x) = x - xγ
+        body_time(x, t) = x - xγ
+
+        moms = geometric_moments(body_space, grid_space, Float64, nan; method=:vofijul)
+        cap = assembled_capacity(moms; bc=0.0)
+        nt = cap.ntotal
+        uω = (ones(nt),)
+        uγ = (ones(nt),)
+        wγ = (zeros(nt),)
+        bc = BorderConditions(; left=Inflow(0.0), right=Outflow())
+
+        fixed = TransportModelMono(cap, uω, uγ; source=0.0, bc_border=bc, bc_interface=nothing, scheme=Upwind1())
+        lay = fixed.layout.offsets
+        nsys = last(lay.γ)
+        u0 = sin.(2π .* cap.xyz[1])
+
+        sys_fixed = LinearSystem(spzeros(Float64, nsys, nsys), zeros(Float64, nsys))
+        assemble_unsteady_mono!(sys_fixed, fixed, u0, 0.0, 0.02, :BE)
+        solve!(sys_fixed; method=:direct, reuse_factorization=false)
+
+        grid = CartesianGrid((0.0,), (1.0,), (65,))
+        moving = MovingTransportModelMono(
+            grid, body_time, uω, uγ;
+            wγ=wγ,
+            source=0.0,
+            bc_border=bc,
+            bc_interface=nothing,
+            scheme=Upwind1(),
+            geom_method=:vofijul,
+        )
+        sys_moving = LinearSystem(spzeros(Float64, nsys, nsys), zeros(Float64, nsys))
+        assemble_unsteady_mono_moving!(sys_moving, moving, u0, 0.0, 0.02, :BE)
+        solve!(sys_moving; method=:direct, reuse_factorization=false)
+
+        capm = moving.cap_slab
+        @test !(capm === nothing)
+        mask = active_omega_mask(capm)
+        err = norm(sys_moving.x[lay.ω][mask] - sys_fixed.x[lay.ω][mask]) / max(norm(sys_fixed.x[lay.ω][mask]), 1e-14)
+        @test err < 5e-4
+    end
+
+    @testset "B. Moving two-phase frozen geometry matches fixed geometry" begin
+        grid_space = (range(0.0, 1.0; length=65),)
+        xγ = 0.53
+        body_space(x) = x - xγ
+        body_time(x, t) = x - xγ
+        moms1 = geometric_moments(body_space, grid_space, Float64, nan; method=:vofijul)
+        moms2 = geometric_moments((x) -> -body_space(x), grid_space, Float64, nan; method=:vofijul)
+        cap1 = assembled_capacity(moms1; bc=0.0)
+        cap2 = assembled_capacity(moms2; bc=0.0)
+        nt = cap1.ntotal
+
+        u1ω = (ones(nt),)
+        u1γ = (ones(nt),)
+        u2ω = (2.0 .* ones(nt),)
+        u2γ = (2.0 .* ones(nt),)
+        wγ = (zeros(nt),)
+        bc1 = BorderConditions(; left=Inflow(0.0), right=Outflow())
+        bc2 = BorderConditions(; left=Outflow(), right=Outflow())
+
+        fixed = TransportModelTwoPhase(
+            cap1, cap2, u1ω, u1γ, u2ω, u2γ;
+            source1=0.0,
+            source2=0.0,
+            bc_border1=bc1,
+            bc_border2=bc2,
+            scheme=Upwind1(),
+        )
+        lay = fixed.layout
+        nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
+        u0 = (sin.(2π .* cap1.xyz[1]), cos.(2π .* cap2.xyz[1]))
+
+        sys_fixed = LinearSystem(spzeros(Float64, nsys, nsys), zeros(Float64, nsys))
+        assemble_unsteady_two_phase!(sys_fixed, fixed, u0, 0.0, 0.02, :BE)
+        solve!(sys_fixed; method=:direct, reuse_factorization=false)
+
+        grid = CartesianGrid((0.0,), (1.0,), (65,))
+        moving = MovingTransportModelTwoPhase(
+            grid, body_time, u1ω, u1γ, u2ω, u2γ;
+            wγ=wγ,
+            source1=0.0,
+            source2=0.0,
+            bc_border1=bc1,
+            bc_border2=bc2,
+            scheme=Upwind1(),
+            geom_method=:vofijul,
+        )
+        sys_moving = LinearSystem(spzeros(Float64, nsys, nsys), zeros(Float64, nsys))
+        assemble_unsteady_two_phase_moving!(sys_moving, moving, u0, 0.0, 0.02, :BE)
+        solve!(sys_moving; method=:direct, reuse_factorization=false)
+
+        cap1m = moving.cap1_slab
+        cap2m = moving.cap2_slab
+        @test !(cap1m === nothing)
+        @test !(cap2m === nothing)
+        mask1 = active_omega_mask(cap1m)
+        mask2 = active_omega_mask(cap2m)
+        err1 = norm(sys_moving.x[lay.ω1][mask1] - sys_fixed.x[lay.ω1][mask1]) / max(norm(sys_fixed.x[lay.ω1][mask1]), 1e-14)
+        err2 = norm(sys_moving.x[lay.ω2][mask2] - sys_fixed.x[lay.ω2][mask2]) / max(norm(sys_fixed.x[lay.ω2][mask2]), 1e-14)
+        @test err1 < 2e-3
+        @test err2 < 2e-3
+    end
+
+    @testset "C. Moving mono no-interface reduction" begin
+        grid_space = (range(0.0, 1.0; length=65),)
+        cap = assembled_capacity(full_moments(grid_space); bc=0.0)
+        nt = cap.ntotal
+        uω = (ones(nt),)
+        uγ = (ones(nt),)
+        bc = BorderConditions(; left=Periodic(), right=Periodic())
+        u0 = sin.(2π .* cap.xyz[1])
+
+        fixed = TransportModelMono(cap, uω, uγ; source=0.0, bc_border=bc, bc_interface=nothing, scheme=Upwind1())
+        rf = solve_unsteady!(fixed, u0, (0.0, 0.05); dt=0.01, scheme=:CN, save_history=false)
+        ωf = omega_view(fixed, rf.states[end])
+
+        grid = CartesianGrid((0.0,), (1.0,), (65,))
+        body_full(x, t) = -1.0
+        moving = MovingTransportModelMono(
+            grid, body_full, uω, uγ;
+            wγ=(zeros(nt),),
+            source=0.0,
+            bc_border=bc,
+            bc_interface=nothing,
+            scheme=Upwind1(),
+            geom_method=:vofijul,
+        )
+        rm = solve_unsteady_moving!(moving, u0, (0.0, 0.05); dt=0.01, scheme=:CN, save_history=false)
+        capm = moving.cap_slab
+        @test !(capm === nothing)
+        mask = active_omega_mask(capm)
+        ωm = rm.states[end][moving.layout.offsets.ω]
+        @test norm(ωf[mask] - ωm[mask], Inf) < 1e-10
+    end
+
+    @testset "D. Relative-speed logic (uγ = wγ => λ = 0)" begin
+        grid = CartesianGrid((0.0,), (1.0,), (65,))
+        body(x, t) = x - 0.53
+        nt = prod(grid.n)
+        z = zeros(nt)
+        uγ = (ones(nt),)
+        wγ = (ones(nt),)
+        model = MovingTransportModelMono(
+            grid, body, (z,), uγ;
+            wγ=wγ,
+            source=0.0,
+            bc_border=BorderConditions(; left=Outflow(), right=Outflow()),
+            bc_interface=Inflow(3.0),
+            scheme=Centered(),
+            geom_method=:vofijul,
+        )
+        sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+        assemble_unsteady_mono_moving!(sys, model, zeros(nt), 0.0, 0.02, :BE)
+
+        cap = model.cap_slab
+        @test !(cap === nothing)
+        lay = model.layout.offsets
+        checked = 0
+        for i in 1:nt
+            Γ = cap.buf.Γ[i]
+            (isfinite(Γ) && Γ > 0) || continue
+            r = lay.γ[i]
+            @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
+            @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+            @test sys.b[r] ≈ 0.0 atol=1e-12
+            checked += 1
+        end
+        @test checked > 0
+    end
+
+    @testset "E. Moving mono constant-state geometric sanity" begin
+        grid = CartesianGrid((0.0,), (1.0,), (81,))
+        U = 0.4
+        body(x, t) = abs(x - (0.45 + U * t)) - 0.2
+        nt = prod(grid.n)
+        vel = (fill(U, nt),)
+        cst = 1.7
+        model = MovingTransportModelMono(
+            grid, body, vel, vel;
+            wγ=vel,
+            source=0.0,
+            bc_border=BorderConditions(; left=Periodic(), right=Periodic()),
+            bc_interface=nothing,
+            scheme=Upwind1(),
+            geom_method=:vofijul,
+        )
+        res = solve_unsteady_moving!(model, fill(cst, nt), (0.0, 0.1); dt=0.02, scheme=:BE, save_history=false)
+        cap = model.cap_slab
+        @test !(cap === nothing)
+        mask = active_omega_mask(cap)
+        ω = res.states[end][model.layout.offsets.ω]
+        @test all(isfinite, ω[mask])
+        m0 = sum(model.Vn[i] * cst for i in eachindex(model.Vn) if mask[i])
+        m1 = sum(model.Vn1[i] * ω[i] for i in eachindex(model.Vn1) if mask[i])
+        rel_mass = abs(m1 - m0) / max(abs(m0), 1e-14)
+        @test rel_mass < 5e-2
+    end
+
+    @testset "F. Moving mono mesh convergence (Upwind1)" begin
+        function run_moving_mono_err(n)
+            grid = CartesianGrid((0.0,), (1.0,), (n,))
+            nt = prod(grid.n)
+            U = 0.4
+            tend = 0.1
+            body(x, t) = abs(x - (0.35 + U * t)) - 0.2
+            vel = (fill(U, nt),)
+            model = MovingTransportModelMono(
+                grid, body, vel, vel;
+                wγ=vel,
+                source=0.0,
+                bc_border=BorderConditions(; left=Periodic(), right=Periodic()),
+                bc_interface=nothing,
+                scheme=Upwind1(),
+                geom_method=:vofijul,
+            )
+            x = collect(range(0.0, 1.0; length=n))
+            u0 = sin.(2π .* x)
+            dt = 0.4 * (1.0 / (n - 1)) / U
+            res = solve_unsteady_moving!(model, u0, (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+            cap = model.cap_slab
+            @test !(cap === nothing)
+            ω = res.states[end][model.layout.offsets.ω]
+            exact = [sin(2π * (cap.C_ω[i][1] - U * tend)) for i in 1:nt]
+            return _l2_weighted_error(cap, ω, exact)
+        end
+
+        errs = [run_moving_mono_err(n) for n in (33, 65, 129)]
+        ord1 = log(errs[1] / errs[2]) / log(2)
+        ord2 = log(errs[2] / errs[3]) / log(2)
+        @test errs[3] < errs[2] < errs[1]
+        @test min(ord1, ord2) >= 0.15
+    end
+
+    @testset "G. Moving two-phase mesh convergence (Upwind1)" begin
+        function run_moving_two_err(n)
+            grid = CartesianGrid((0.0,), (1.0,), (n,))
+            nt = prod(grid.n)
+            c = 0.4
+            a0 = 0.47
+            tend = 0.1
+            body1(x, t) = x - (a0 + c * t)
+            vel = (fill(c, nt),)
+            bc = BorderConditions(; left=Periodic(), right=Periodic())
+            model = MovingTransportModelTwoPhase(
+                grid, body1, vel, vel, vel, vel;
+                wγ=vel,
+                source1=0.0,
+                source2=0.0,
+                bc_border1=bc,
+                bc_border2=bc,
+                scheme=Upwind1(),
+                geom_method=:vofijul,
+            )
+            x = collect(range(0.0, 1.0; length=n))
+            u01 = sin.(2π .* x)
+            u02 = cos.(2π .* x)
+            dt = 0.4 * (1.0 / (n - 1)) / c
+            res = solve_unsteady_moving!(model, (u01, u02), (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+            cap1 = model.cap1_slab
+            cap2 = model.cap2_slab
+            @test !(cap1 === nothing)
+            @test !(cap2 === nothing)
+            lay = model.layout
+            ω1 = res.states[end][lay.ω1]
+            ω2 = res.states[end][lay.ω2]
+            ex1 = [sin(2π * (cap1.C_ω[i][1] - c * tend)) for i in 1:nt]
+            ex2 = [cos(2π * (cap2.C_ω[i][1] - c * tend)) for i in 1:nt]
+            return _l2_weighted_error(cap1, ω1, ex1), _l2_weighted_error(cap2, ω2, ex2)
+        end
+
+        errs = [run_moving_two_err(n) for n in (33, 65, 129)]
+        e1 = [e[1] for e in errs]
+        e2 = [e[2] for e in errs]
+        o11 = log(e1[1] / e1[2]) / log(2)
+        o12 = log(e1[2] / e1[3]) / log(2)
+        o21 = log(e2[1] / e2[2]) / log(2)
+        o22 = log(e2[2] / e2[3]) / log(2)
+        @test e1[3] < e1[2] < e1[1]
+        @test e2[3] < e2[2] < e2[1]
+        @test min(o11, o12) >= 0.15
+        @test min(o21, o22) >= 0.15
+    end
+
+    @testset "H. Moving two-phase both-inflow rejection uses relative speeds" begin
+        grid_space = (range(0.0, 1.0; length=65),)
+        body_space(x) = x - 0.53
+        moms1 = geometric_moments(body_space, grid_space, Float64, nan; method=:vofijul)
+        cap1_ref = assembled_capacity(moms1; bc=0.0)
+        nt = cap1_ref.ntotal
+        n1 = [cap1_ref.n_γ[i][1] for i in 1:nt]
+
+        grid = CartesianGrid((0.0,), (1.0,), (65,))
+        body_time(x, t) = x - 0.53
+        z = zeros(nt)
+        u1γ = (z,)
+        u2γ = ([2.0 * n1[i] for i in 1:nt],)
+        wγ = ([n1[i] for i in 1:nt],)
+
+        model = MovingTransportModelTwoPhase(
+            grid, body_time, (z,), u1γ, (z,), u2γ;
+            wγ=wγ,
+            source1=0.0,
+            source2=0.0,
+            bc_border1=BorderConditions(; left=Outflow(), right=Outflow()),
+            bc_border2=BorderConditions(; left=Outflow(), right=Outflow()),
+            scheme=Centered(),
+            geom_method=:vofijul,
+        )
+        sys = LinearSystem(spzeros(Float64, 4 * nt, 4 * nt), zeros(Float64, 4 * nt))
+        err = try
+            assemble_unsteady_two_phase_moving!(sys, model, (zeros(nt), zeros(nt)), 0.0, 0.02, :BE)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("relative speeds", sprint(showerror, err))
+    end
+
+    @testset "I. Moving smooth periodic convergence (> 1.0)" begin
+        function run_moving_mono_high_order(n)
+            grid = CartesianGrid((0.0,), (1.0,), (n,))
+            nt = prod(grid.n)
+            body_full(x, t) = -1.0
+            vel = (ones(nt),)
+            model = MovingTransportModelMono(
+                grid, body_full, vel, vel;
+                wγ=(zeros(nt),),
+                source=0.0,
+                bc_border=BorderConditions(; left=Periodic(), right=Periodic()),
+                bc_interface=nothing,
+                scheme=Centered(),
+                geom_method=:vofijul,
+            )
+
+            x = collect(range(0.0, 1.0; length=n))
+            u0 = sin.(2π .* x)
+            dt = 0.5 * (1.0 / (n - 1))
+            res = solve_unsteady_moving!(model, u0, (0.0, 1.0); dt=dt, scheme=:CN, save_history=false)
+            cap = model.cap_slab
+            @test !(cap === nothing)
+            ω = res.states[end][model.layout.offsets.ω]
+            exact = sin.(2π .* x) # one full period on the same periodic grid points
+            return _l2_weighted_error(cap, ω, exact)
+        end
+
+        function run_moving_two_high_order(n)
+            grid = CartesianGrid((0.0,), (1.0,), (n,))
+            nt = prod(grid.n)
+            body_full(x, t) = -1.0
+            vel = (ones(nt),)
+            bc = BorderConditions(; left=Periodic(), right=Periodic())
+            model = MovingTransportModelTwoPhase(
+                grid, body_full, vel, vel, vel, vel;
+                body2=body_full,
+                wγ=(zeros(nt),),
+                source1=0.0,
+                source2=0.0,
+                bc_border1=bc,
+                bc_border2=bc,
+                scheme=Centered(),
+                geom_method=:vofijul,
+            )
+
+            x = collect(range(0.0, 1.0; length=n))
+            u01 = sin.(2π .* x)
+            u02 = cos.(2π .* x)
+            dt = 0.5 * (1.0 / (n - 1))
+            res = solve_unsteady_moving!(model, (u01, u02), (0.0, 1.0); dt=dt, scheme=:CN, save_history=false)
+            cap1 = model.cap1_slab
+            cap2 = model.cap2_slab
+            @test !(cap1 === nothing)
+            @test !(cap2 === nothing)
+            lay = model.layout
+            ω1 = res.states[end][lay.ω1]
+            ω2 = res.states[end][lay.ω2]
+            ex1 = sin.(2π .* x)
+            ex2 = cos.(2π .* x)
+            return _l2_weighted_error(cap1, ω1, ex1), _l2_weighted_error(cap2, ω2, ex2)
+        end
+
+        em = [run_moving_mono_high_order(n) for n in (33, 65, 129)]
+        om1 = log(em[1] / em[2]) / log(2)
+        om2 = log(em[2] / em[3]) / log(2)
+        @test em[3] < em[2] < em[1]
+        @test min(om1, om2) > 1.0
+
+        et = [run_moving_two_high_order(n) for n in (33, 65, 129)]
+        e1 = [e[1] for e in et]
+        e2 = [e[2] for e in et]
+        o11 = log(e1[1] / e1[2]) / log(2)
+        o12 = log(e1[2] / e1[3]) / log(2)
+        o21 = log(e2[1] / e2[2]) / log(2)
+        o22 = log(e2[2] / e2[3]) / log(2)
+        @test e1[3] < e1[2] < e1[1]
+        @test e2[3] < e2[2] < e2[1]
+        @test min(o11, o12) > 1.0
+        @test min(o21, o22) > 1.0
     end
 end
 
