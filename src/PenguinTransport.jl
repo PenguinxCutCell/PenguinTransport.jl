@@ -559,7 +559,7 @@ function _interface_closure_two_phase(
 		end
 
 		if s1 < zero(T) && s2 < zero(T)
-			throw(ArgumentError("two-phase transport interface is locally ill-posed: both phases are inflow at Γ cell $lin"))
+			throw(ArgumentError("two-phase transport interface is locally ill-posed (both-inflow local configuration) at Γ cell $lin"))
 		elseif s1 < zero(T) && s2 >= zero(T)
 			# gamma1 row: flux continuity; gamma2 row: phase-2 outflow closure
 			b22[lin] = Γ * s1
@@ -827,18 +827,25 @@ function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelT
 	return sys
 end
 
-function _theta_from_scheme(::Type{T}, scheme) where {T}
-	if scheme isa Symbol
-		if scheme === :BE
-			return one(T)
-		elseif scheme === :CN
-			return convert(T, 0.5)
-		end
-		throw(ArgumentError("unknown scheme `$scheme`; expected :BE or :CN"))
+function _resolve_theta(scheme)::Float64
+	if scheme === :BE
+		return 1.0
+	elseif scheme === :CN
+		return 0.5
+	elseif scheme isa Symbol
+		throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]; got Symbol `$scheme`"))
+	elseif scheme isa Bool
+		throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]"))
 	elseif scheme isa Real
-		return convert(T, scheme)
+		θ = try
+			Float64(scheme)
+		catch
+			throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]"))
+		end
+		(isfinite(θ) && 0.0 <= θ <= 1.0) || throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]"))
+		return θ
 	end
-	throw(ArgumentError("scheme must be a Symbol (:BE/:CN) or a numeric theta"))
+	throw(ArgumentError("scheme must be :BE, :CN, or a numeric theta in [0,1]"))
 end
 
 function _init_unsteady_state_mono(model::TransportModelMono{N,T}, u0) where {N,T}
@@ -900,7 +907,7 @@ function assemble_unsteady_mono!(
 	dt::T,
 	scheme_or_theta,
 ) where {N,T}
-	θ = _theta_from_scheme(T, scheme_or_theta)
+	θ = convert(T, _resolve_theta(scheme_or_theta))
 	assemble_steady_mono!(sys, model, t + θ * dt)
 
 	lay = model.layout.offsets
@@ -950,7 +957,7 @@ function assemble_unsteady_two_phase!(
 	dt::T,
 	scheme_or_theta,
 ) where {N,T}
-	θ = _theta_from_scheme(T, scheme_or_theta)
+	θ = convert(T, _resolve_theta(scheme_or_theta))
 	assemble_steady_two_phase!(sys, model, t + θ * dt)
 
 	lay = model.layout
@@ -1135,7 +1142,7 @@ end
 """
     solve_unsteady!(model, u0, tspan; dt, scheme=:BE, method=:direct, save_history=true, kwargs...)
 
-Time-integrate mono or two-phase transport with a theta-method (`:BE`, `:CN`, or numeric `theta`).
+Time-integrate mono or two-phase transport with a theta-method (`:BE`, `:CN`, or numeric `theta` in `[0,1]`).
 Returns `(times, states, system, reused_constant_operator)`.
 """
 function solve_unsteady!(
@@ -1151,7 +1158,7 @@ function solve_unsteady!(
 	t0, tend = tspan
 	tend >= t0 || throw(ArgumentError("tspan must satisfy tend >= t0"))
 	dt > zero(T) || throw(ArgumentError("dt must be positive"))
-	θ = _theta_from_scheme(T, scheme)
+	θ = convert(T, _resolve_theta(scheme))
 
 	u = _init_unsteady_state_mono(model, u0)
 	lay = model.layout.offsets
@@ -1222,7 +1229,7 @@ function solve_unsteady!(
 	t0, tend = tspan
 	tend >= t0 || throw(ArgumentError("tspan must satisfy tend >= t0"))
 	dt > zero(T) || throw(ArgumentError("dt must be positive"))
-	θ = _theta_from_scheme(T, scheme)
+	θ = convert(T, _resolve_theta(scheme))
 
 	u = _init_unsteady_state_two_phase(model, u0)
 	lay = model.layout
@@ -1280,9 +1287,36 @@ function solve_unsteady!(
 	return (times=times, states=states, system=sys, reused_constant_operator=false)
 end
 
+"""
+    omega1_view(model, x)
+
+View the phase-1 bulk block (`ω1`) from a full two-phase state `x`.
+The expected unknown ordering is `(ω1, γ1, ω2, γ2)`.
+"""
 omega1_view(model::TransportModelTwoPhase, x) = x[model.layout.ω1]
+
+"""
+    gamma1_view(model, x)
+
+View the phase-1 interface block (`γ1`) from a full two-phase state `x`.
+The expected unknown ordering is `(ω1, γ1, ω2, γ2)`.
+"""
 gamma1_view(model::TransportModelTwoPhase, x) = x[model.layout.γ1]
+
+"""
+    omega2_view(model, x)
+
+View the phase-2 bulk block (`ω2`) from a full two-phase state `x`.
+The expected unknown ordering is `(ω1, γ1, ω2, γ2)`.
+"""
 omega2_view(model::TransportModelTwoPhase, x) = x[model.layout.ω2]
+
+"""
+    gamma2_view(model, x)
+
+View the phase-2 interface block (`γ2`) from a full two-phase state `x`.
+The expected unknown ordering is `(ω1, γ1, ω2, γ2)`.
+"""
 gamma2_view(model::TransportModelTwoPhase, x) = x[model.layout.γ2]
 
 end

@@ -1,68 +1,38 @@
 # PenguinTransport.jl
 
+[![In development documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://PenguinxCutCell.github.io/PenguinTransport.jl/dev/)
 [![CI](https://github.com/PenguinxCutCell/PenguinTransport.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/PenguinxCutCell/PenguinTransport.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/PenguinxCutCell/PenguinTransport.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/PenguinxCutCell/PenguinTransport.jl)
 
-`PenguinTransport.jl` is a cut-cell scalar transport package built on:
-- `CartesianGeometry.jl`
-- `CartesianOperators.jl`
-- `PenguinBCs.jl`
-- `PenguinSolverCore.jl`
+`PenguinTransport.jl` is a cut-cell advection transport package for Cartesian grids in the PenguinxCutCell ecosystem (`CartesianGeometry.jl`, `CartesianOperators.jl`, `PenguinBCs.jl`, `PenguinSolverCore.jl`).
+
+It supports:
+
+- mono transport (steady and unsteady),
+- two-phase transport (steady and unsteady),
+- spatial advection schemes `Centered()` and `Upwind1()`,
+- outer advection BCs `Inflow` / `Outflow` / `Periodic`,
+- embedded-interface sign-based closure with unknown ordering `(ω1, γ1, ω2, γ2)` for two-phase.
 
 ## Governing Equation
 
-The package targets scalar transport in conservative form:
+```math
+\partial_t \phi + \nabla\cdot(\mathbf{u}\,\phi) = s
+```
 
-$$
-\frac{\partial \phi}{\partial t} + \nabla \cdot (\mathbf{u}\,\phi) = s
-$$
+Steady form:
 
-For steady problems:
+```math
+\nabla\cdot(\mathbf{u}\,\phi) = s
+```
 
-$$
-\nabla \cdot (\mathbf{u}\,\phi) = s
-$$
+## Documentation
 
-## Numerical Schemes
-
-Spatial advection discretization:
-- `Centered()`
-- `Upwind1()`
-
-Time integration for unsteady solves (`solve_unsteady!`):
-- `:BE` (Backward Euler, $\theta = 1$)
-- `:CN` (Crank-Nicolson, $\theta = 1/2$)
-- numeric `theta` values are also accepted
-
-## Embedded Interface Convention
-
-- Outer box boundaries use advection BC types (`Inflow`, `Outflow`, `Periodic`).
-- Embedded interface (`Γ`) uses sign-based closure with `s = u_\gamma \cdot n_\gamma`:
-  - if `s < 0` and `bc_interface` provides a value, inflow Dirichlet is imposed on interface unknowns (`Tγ = g`),
-  - otherwise (`s >= 0`, or no inflow value provided), continuity closure is used (`Tγ = Tω`).
-- No-flow interface mode is recovered by setting interface velocity to zero (`uγ = 0`), e.g. in 2D: `uγ = (zeros(nt), zeros(nt))`.
-
-## Feature Status
-
-| Area | Item | Status | Notes |
-|---|---|---|---|
-| Models | Monophasic steady transport | Implemented | `TransportModelMono` + `assemble_steady_mono!` + `solve_steady!` |
-| Models | Monophasic unsteady transport | Implemented | `assemble_unsteady_mono!` + `solve_unsteady!` |
-| Models | Two-phase steady transport | Implemented | `TransportModelTwoPhase` + `assemble_steady_two_phase!` + flux continuity coupling |
-| Models | Two-phase unsteady transport | Implemented | `assemble_unsteady_two_phase!` + `solve_unsteady!` + theta-method |
-| Advection space scheme | Centered | Implemented | `Centered()` |
-| Advection space scheme | First-order upwind | Implemented | `Upwind1()` |
-| Time scheme | Backward Euler | Implemented | `scheme=:BE` |
-| Time scheme | Crank-Nicolson | Implemented | `scheme=:CN` |
-| Time scheme | Generic theta method | Implemented | Numeric `scheme` accepted as `theta` |
-| Source term | Constant or callable source | Implemented | scalar/callback `(x...)` or `(x..., t)` |
-| Outer BCs | Inflow / Outflow / Periodic | Implemented | Handled through `PenguinBCs.jl` border conditions |
-| Embedded interface BC | No-flow boundary (`u·n=0` on `Γ`) | Implemented | Use zero interface velocity input (`uγ = 0`) |
-| Embedded interface BC | Embedded inflow/outflow scalar imposition | Implemented | Sign-based on `uγ·nγ`: inflow uses `bc_interface`, else continuity |
-
-## Current Limitation
-
-- Two-phase interface configuration with both phases locally inflow at the same `Γ` cell is treated as ill-posed and raises an `ArgumentError`.
+- Home: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/>
+- API: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/api/>
+- Examples: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/examples/>
+- Algorithms: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/algorithms/>
+- Transport Models: <https://PenguinxCutCell.github.io/PenguinTransport.jl/stable/transport/>
 
 ## Installation
 
@@ -71,42 +41,67 @@ using Pkg
 Pkg.add(url="https://github.com/PenguinxCutCell/PenguinTransport.jl")
 ```
 
-## Quick Start
+## Quick Start (Mono Unsteady)
 
 ```julia
-using PenguinTransport
-using CartesianGeometry
+using CartesianGeometry: geometric_moments, nan
 using CartesianOperators
 using PenguinBCs
+using PenguinTransport
 
 full_moments(grid) = geometric_moments((args...) -> -1.0, grid, Float64, nan; method=:vofijul)
 
-grid = (0.0:0.05:1.0, 0.0:0.05:1.0)
+grid = (0.0:0.05:1.0,)
 cap = assembled_capacity(full_moments(grid); bc=0.0)
 nt = cap.ntotal
 
-bc = BorderConditions(; left=Periodic(), right=Periodic(), bottom=Periodic(), top=Periodic())
-uω = (ones(nt), zeros(nt))
-uγ = (ones(nt), zeros(nt))
+bc = BorderConditions(; left=Periodic(), right=Periodic())
+uω = (ones(nt),)
+uγ = (ones(nt),)
 
 model = TransportModelMono(cap, uω, uγ; bc_border=bc, scheme=Centered())
-result = solve_unsteady!(model, zeros(nt), (0.0, 1.0); dt=0.01, scheme=:CN)
+res = solve_unsteady!(model, zeros(nt), (0.0, 0.2); dt=0.01, scheme=:CN)
 ```
 
-## Examples
+## Time Schemes
 
-See runnable scripts in `examples/`:
-- `smooth_blob_translation.jl`
-- `sharp_peak_advection.jl`
-- `manufactured_solution.jl`
-- `embedded_interface_bc_validation.jl`
-- `two_phase_planar_1d_validation.jl`
-- `two_phase_2d_planar_sanity.jl`
+All unsteady entry points (`assemble_unsteady_*`, `solve_unsteady!`) accept exactly:
 
-## Documentation
+- `:BE` (Backward Euler, `θ = 1`)
+- `:CN` (Crank-Nicolson, `θ = 1/2`)
+- numeric `θ` with `0 <= θ <= 1`
 
-Local docs are built with Documenter.jl from the `docs/` folder:
+Any unsupported symbol or numeric `θ` outside `[0,1]` raises `ArgumentError`.
+
+## Embedded Interface Convention
+
+Let `s = uγ·nγ`.
+
+Mono:
+
+- if `s < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
+- otherwise use continuity closure `Tγ = Tω`.
+
+Two-phase:
+
+- closure is selected locally from phase-wise signs,
+- only inflow information is imposed,
+- the ill-posed both-inflow local configuration is rejected with `ArgumentError`.
+
+No-flow mode is recovered by setting interface velocity to zero (`uγ = 0`).
+
+## Example Scripts
+
+- `examples/smooth_blob_translation.jl`
+- `examples/sharp_peak_advection.jl`
+- `examples/manufactured_solution.jl`
+- `examples/embedded_interface_bc_validation.jl`
+- `examples/two_phase_planar_1d_validation.jl`
+- `examples/two_phase_2d_planar_sanity.jl`
+
+## Local Docs Build
 
 ```bash
+julia --project=docs -e 'using Pkg; Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```

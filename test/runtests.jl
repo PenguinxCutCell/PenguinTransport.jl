@@ -117,6 +117,195 @@ function _linf_error_region(cap, u_num, u_exact, pred)
     return err, used
 end
 
+@testset "API contract regressions" begin
+    @testset "Scheme parsing and validation" begin
+        grid_mono = (0.0:0.25:1.0,)
+        cap_mono = assembled_capacity(full_moments(grid_mono); bc=0.0)
+        nt_mono = cap_mono.ntotal
+        bc_mono = BorderConditions(; left=Periodic(), right=Periodic())
+        model_mono = TransportModelMono(cap_mono, (ones(nt_mono),), (ones(nt_mono),); bc_border=bc_mono, scheme=Centered())
+        sys_mono = LinearSystem(spzeros(Float64, 2 * nt_mono, 2 * nt_mono), zeros(Float64, 2 * nt_mono))
+        u0_mono = zeros(nt_mono)
+
+        @test_nowarn assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, :BE)
+        @test_nowarn assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, :CN)
+        @test_nowarn assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, 0.3)
+        @test_throws ArgumentError assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, :foo)
+        @test_throws ArgumentError assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, -0.1)
+        @test_throws ArgumentError assemble_unsteady_mono!(sys_mono, model_mono, u0_mono, 0.0, 0.1, 1.2)
+        @test_throws ArgumentError solve_unsteady!(model_mono, u0_mono, (0.0, 0.1); dt=0.1, scheme=:foo, save_history=false)
+
+        grid_two = (0.0:0.25:1.0,)
+        cap1 = assembled_capacity(planar_moments_left(grid_two; x0=0.5); bc=0.0)
+        cap2 = assembled_capacity(planar_moments_right(grid_two; x0=0.5); bc=0.0)
+        nt_two = cap1.ntotal
+        z = zeros(nt_two)
+        model_two = TransportModelTwoPhase(
+            cap1, cap2,
+            (z,), (z,),
+            (z,), (z,);
+            source1=0.0,
+            source2=0.0,
+            bc_border1=BorderConditions(; left=Outflow(), right=Outflow()),
+            bc_border2=BorderConditions(; left=Outflow(), right=Outflow()),
+            scheme=Centered(),
+        )
+        sys_two = LinearSystem(spzeros(Float64, 4 * nt_two, 4 * nt_two), zeros(Float64, 4 * nt_two))
+        u0_two = (zeros(nt_two), zeros(nt_two))
+
+        @test_nowarn assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, :BE)
+        @test_nowarn assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, :CN)
+        @test_nowarn assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, 0.7)
+        @test_throws ArgumentError assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, :foo)
+        @test_throws ArgumentError assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, -0.1)
+        @test_throws ArgumentError assemble_unsteady_two_phase!(sys_two, model_two, u0_two, 0.0, 0.1, 1.2)
+        @test_throws ArgumentError solve_unsteady!(model_two, u0_two, (0.0, 0.1); dt=0.1, scheme=1.2, save_history=false)
+    end
+
+    @testset "Direct assembly and solve wrapper consistency (:CN)" begin
+        t0 = 0.0
+        dt = 0.1
+
+        grid_mono = (0.0:0.25:1.0,)
+        cap_mono = assembled_capacity(full_moments(grid_mono); bc=0.0)
+        nt_mono = cap_mono.ntotal
+        bc_mono = BorderConditions(; left=Periodic(), right=Periodic())
+        model_mono = TransportModelMono(cap_mono, (ones(nt_mono),), (ones(nt_mono),); bc_border=bc_mono, source=0.0, scheme=Centered())
+        u0_mono = sin.(2π .* cap_mono.xyz[1])
+
+        sys_dir_mono = LinearSystem(spzeros(Float64, 2 * nt_mono, 2 * nt_mono), zeros(Float64, 2 * nt_mono))
+        assemble_unsteady_mono!(sys_dir_mono, model_mono, u0_mono, t0, dt, :CN)
+        solve!(sys_dir_mono; method=:direct)
+
+        res_mono = solve_unsteady!(model_mono, u0_mono, (t0, t0 + dt); dt=dt, scheme=:CN, save_history=true)
+        mask_mono = active_omega_mask(cap_mono)
+        @test norm(omega_view(model_mono, sys_dir_mono.x)[mask_mono] - omega_view(model_mono, res_mono.states[end])[mask_mono], Inf) < 1e-12
+
+        grid_two = (0.0:0.25:1.0,)
+        cap1 = assembled_capacity(planar_moments_left(grid_two; x0=0.5); bc=0.0)
+        cap2 = assembled_capacity(planar_moments_right(grid_two; x0=0.5); bc=0.0)
+        nt_two = cap1.ntotal
+        z = zeros(nt_two)
+        model_two = TransportModelTwoPhase(
+            cap1, cap2,
+            (z,), (z,),
+            (z,), (z,);
+            source1=0.0,
+            source2=0.0,
+            bc_border1=BorderConditions(; left=Outflow(), right=Outflow()),
+            bc_border2=BorderConditions(; left=Outflow(), right=Outflow()),
+            scheme=Centered(),
+        )
+        u0_two = (fill(0.2, nt_two), fill(-0.1, nt_two))
+
+        sys_dir_two = LinearSystem(spzeros(Float64, 4 * nt_two, 4 * nt_two), zeros(Float64, 4 * nt_two))
+        assemble_unsteady_two_phase!(sys_dir_two, model_two, u0_two, t0, dt, :CN)
+        solve!(sys_dir_two; method=:direct)
+
+        res_two = solve_unsteady!(model_two, u0_two, (t0, t0 + dt); dt=dt, scheme=:CN, save_history=true)
+        mask1 = active_omega_mask(cap1)
+        mask2 = active_omega_mask(cap2)
+        @test norm(omega1_view(model_two, sys_dir_two.x)[mask1] - omega1_view(model_two, res_two.states[end])[mask1], Inf) < 1e-12
+        @test norm(omega2_view(model_two, sys_dir_two.x)[mask2] - omega2_view(model_two, res_two.states[end])[mask2], Inf) < 1e-12
+        @test norm(gamma1_view(model_two, sys_dir_two.x) - gamma1_view(model_two, res_two.states[end]), Inf) < 1e-12
+        @test norm(gamma2_view(model_two, sys_dir_two.x) - gamma2_view(model_two, res_two.states[end]), Inf) < 1e-12
+    end
+
+    @testset "Mono embedded-interface closure: inflow/outflow/no-flow" begin
+        grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
+        cap = assembled_capacity(circle_moments(grid); bc=0.0)
+        nt = cap.ntotal
+        lay = layout_mono(nt).offsets
+        zω = (zeros(nt), zeros(nt))
+        g = 2.5
+
+        # Sign-varying interface velocity (uγ·nγ changes sign around the circle).
+        uγ = (ones(nt), zeros(nt))
+        model = TransportModelMono(cap, zω, uγ; bc_interface=Inflow(g), scheme=Centered())
+        sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+        assemble_steady_mono!(sys, model, 0.0)
+
+        nin = 0
+        nout = 0
+        for i in 1:nt
+            Γ = cap.buf.Γ[i]
+            (isfinite(Γ) && Γ > 0) || continue
+            s = uγ[1][i] * cap.n_γ[i][1] + uγ[2][i] * cap.n_γ[i][2]
+            r = lay.γ[i]
+            if s < 0
+                nin += 1
+                @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-12
+                @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+                @test sys.b[r] ≈ Γ * g atol=1e-12
+            else
+                nout += 1
+                @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
+                @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+                @test sys.b[r] ≈ 0.0 atol=1e-12
+            end
+        end
+        @test nin > 0
+        @test nout > 0
+
+        # No-flow interface mode: recover continuity closure everywhere.
+        zγ = (zeros(nt), zeros(nt))
+        model0 = TransportModelMono(cap, zω, zγ; bc_interface=Inflow(g), scheme=Centered())
+        sys0 = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+        assemble_steady_mono!(sys0, model0, 0.0)
+        for i in 1:nt
+            Γ = cap.buf.Γ[i]
+            (isfinite(Γ) && Γ > 0) || continue
+            r = lay.γ[i]
+            @test sys0.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
+            @test sys0.A[r, lay.γ[i]] ≈ Γ atol=1e-12
+            @test sys0.b[r] ≈ 0.0 atol=1e-12
+        end
+    end
+
+    @testset "Two-phase both-inflow local configuration throws" begin
+        grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
+        cap1 = assembled_capacity(circle_moments(grid); bc=0.0)
+        cap2 = assembled_capacity(circle_moments_complement(grid); bc=0.0)
+        nt = cap1.ntotal
+        z = zeros(nt)
+        u1γ = ([-cap1.n_γ[i][1] for i in 1:nt], [-cap1.n_γ[i][2] for i in 1:nt])
+        u2γ = ([-cap2.n_γ[i][1] for i in 1:nt], [-cap2.n_γ[i][2] for i in 1:nt])
+        model = TransportModelTwoPhase(
+            cap1, cap2,
+            (z, z), u1γ,
+            (z, z), u2γ;
+            bc_border1=BorderConditions(; left=Outflow(), right=Outflow(), bottom=Outflow(), top=Outflow()),
+            bc_border2=BorderConditions(; left=Outflow(), right=Outflow(), bottom=Outflow(), top=Outflow()),
+            scheme=Centered(),
+        )
+        sys = LinearSystem(spzeros(Float64, 4 * nt, 4 * nt), zeros(Float64, 4 * nt))
+
+        err = try
+            assemble_steady_two_phase!(sys, model, 0.0)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("both-inflow local configuration", sprint(showerror, err))
+    end
+
+    @testset "Sign-convention regression: positive inflow data gives negative steady state" begin
+        grid = (0.0:0.05:1.0,)
+        cap = assembled_capacity(full_moments(grid); bc=0.0)
+        nt = cap.ntotal
+        g = 1.3
+        bc = BorderConditions(; left=Inflow(g), right=Outflow())
+        model = TransportModelMono(cap, (ones(nt),), (ones(nt),); source=0.0, bc_border=bc, scheme=Upwind1())
+        sys = solve_steady!(model)
+        ω = omega_view(model, sys.x)
+        mask = active_omega_mask(cap)
+
+        # Current transport operator convention maps positive imposed inflow value g to -g in the solved scalar.
+        @test maximum(abs.(ω[mask] .+ g)) < 1e-12
+    end
+end
+
 @testset "1D periodic advection schemes" begin
     grid = (0.0:0.05:1.0,)
     cap = assembled_capacity(full_moments(grid); bc=0.0)
