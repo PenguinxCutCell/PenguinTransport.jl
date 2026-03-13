@@ -252,8 +252,8 @@ function TransportModelTwoPhase(
 	_validate_two_phase_caps(cap1, cap2)
 	u1ωv, u1γv = _velocity_values(cap1, u1ω, u1γ, zero(T))
 	u2ωv, u2γv = _velocity_values(cap2, u2ω, u2γ, zero(T))
-	ops1 = advection_ops(cap1, u1ωv, u1γv; periodic=periodic1, scheme=scheme)
-	ops2 = advection_ops(cap2, u2ωv, u2γv; periodic=periodic2, scheme=scheme)
+	ops1 = _advection_ops_moving(cap1, u1ωv, u1γv; periodic=periodic1, scheme=scheme)
+	ops2 = _advection_ops_moving(cap2, u2ωv, u2γv; periodic=periodic2, scheme=scheme)
 	return TransportModelTwoPhase(
 		cap1,
 		cap2,
@@ -286,7 +286,7 @@ function TransportModelMono(
 	scheme::AdvectionScheme=Centered(),
 ) where {N,T}
 	uωv, uγv = _velocity_values(cap, uω, uγ, zero(T))
-	ops = advection_ops(cap, uωv, uγv; periodic=periodic, scheme=scheme)
+	ops = _advection_ops_moving(cap, uωv, uγv; periodic=periodic, scheme=scheme)
 	return TransportModelMono(
 		cap,
 		ops,
@@ -479,6 +479,69 @@ function _relative_interface_velocity(
 	return ntuple(d -> uγ[d] .- wγ[d], N)
 end
 
+function _shift_inactive_couplings_to_diagonal!(
+	C::SparseMatrixCSC{T,Int},
+	activeω::BitVector,
+) where {T}
+	n = size(C, 1)
+	size(C, 2) == n || throw(ArgumentError("operator block must be square"))
+	length(activeω) == n || throw(ArgumentError("active mask length must match operator size"))
+
+	add_diag = zeros(T, n)
+	@inbounds for j in 1:n
+		col_active = activeω[j]
+		for p in nzrange(C, j)
+			i = C.rowval[p]
+			if activeω[i] && !col_active
+				v = C.nzval[p]
+				if v != zero(T)
+					add_diag[i] += v
+					C.nzval[p] = zero(T)
+				end
+			end
+		end
+	end
+	dropzeros!(C)
+
+	@inbounds for i in 1:n
+		v = add_diag[i]
+		v == zero(T) && continue
+		C[i, i] = C[i, i] + v
+	end
+	return C
+end
+
+function _advection_ops_moving(
+	cap::AssembledCapacity{N,T},
+	uω::NTuple{N,<:AbstractVector{T}},
+	uγ::NTuple{N,<:AbstractVector{T}};
+	periodic::NTuple{N,Bool},
+	scheme::AdvectionScheme,
+) where {N,T}
+	nt = cap.ntotal
+	uγflat = Vector{T}(undef, N * nt)
+	@inbounds for d in 1:N
+		copyto!(uγflat, (d - 1) * nt + 1, uγ[d], 1, nt)
+	end
+	G, H, _, nnodes, D_m, D_p, _, S_p = CartesianOperators.build_GHW(cap; periodic=periodic)
+	activeω, _ = _cell_activity_masks(cap)
+	C = ntuple(d -> begin
+		a = cap.buf.A[d] .* uω[d]
+		if scheme isa Upwind1
+			a⁺ = max.(a, zero(T))
+			a⁻ = min.(a, zero(T))
+			return spdiagm(0 => a⁺) * D_m[d] + spdiagm(0 => a⁻) * D_p[d]
+		elseif scheme isa Centered
+			Cd = convert(T, 0.5) * (spdiagm(0 => a) * D_m[d] + spdiagm(0 => a) * D_p[d])
+			return _shift_inactive_couplings_to_diagonal!(Cd, activeω)
+		end
+		throw(ArgumentError("unknown advection scheme $(typeof(scheme))"))
+	end, N)
+	Htuγ = H' * uγflat
+	K = ntuple(d -> spdiagm(0 => S_p[d] * Htuγ), N)
+	return AdvectionOps{N,T}(C, K, H, cap.V, nnodes)
+end
+
 _relative_speed_atol(::Type{T}) where {T} = convert(T, 100) * eps(T)
 
 function _eval_levelset_time(body, x::SVector{N,T}, t::T) where {N,T}
@@ -593,7 +656,7 @@ function _build_moving_slab!(
 	uωv, uγv = _velocity_values(cap_slab, model.uω, model.uγ, t)
 	wγv = _velocity_tuple_values(cap_slab, model.wγ, cap_slab.C_γ, t)
 	uγrel = _relative_interface_velocity(uγv, wγv)
-	ops_slab = advection_ops(cap_slab, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
+	ops_slab = _advection_ops_moving(cap_slab, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
 
 	model.cap_slab = cap_slab
 	model.ops_slab = ops_slab
@@ -635,8 +698,8 @@ function _build_moving_slab!(
 	wγv = _velocity_tuple_values(cap1_slab, model.wγ, cap1_slab.C_γ, t)
 	u1γrel = _relative_interface_velocity(u1γv, wγv)
 	u2γrel = _relative_interface_velocity(u2γv, wγv)
-	ops1_slab = advection_ops(cap1_slab, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
-	ops2_slab = advection_ops(cap2_slab, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
+	ops1_slab = _advection_ops_moving(cap1_slab, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
+	ops2_slab = _advection_ops_moving(cap2_slab, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
 
 	model.cap1_slab = cap1_slab
 	model.ops1_slab = ops1_slab
@@ -1141,19 +1204,12 @@ function apply_box_bc_transport_mono!(
 				xface = _normal_face_point(cap, I, d, is_high)
 				g = convert(T, eval_bc(side_bc.value, xface, t))
 
-				if is_high
-					Ihalo = CartesianIndex(ntuple(k -> k == d ? cap.nnodes[d] : I[k], N))
-					halo_lin = LI[Ihalo]
-					halo_row = ωrows[halo_lin]
-					_set_row_identity!(A, b, halo_row, g)
+				if adv_scheme isa Centered
+					b[row] += (un * Aface) * (g / convert(T, 2))
+				elseif adv_scheme isa Upwind1
+					b[row] += (un * Aface) * g
 				else
-					if adv_scheme isa Centered
-						b[row] += (un * Aface) * (g / convert(T, 2))
-					elseif adv_scheme isa Upwind1
-						b[row] += (un * Aface) * g
-					else
-						throw(ArgumentError("unknown advection scheme $(typeof(adv_scheme))"))
-					end
+					throw(ArgumentError("unknown advection scheme $(typeof(adv_scheme))"))
 				end
 			end
 		end
@@ -1175,7 +1231,7 @@ function _ops_for_time(
 	t::T,
 ) where {N,T}
 	uωv, uγv = _velocity_values(cap, uω, uγ, t)
-	ops = advection_ops(cap, uωv, uγv; periodic=periodic, scheme=scheme)
+	ops = _advection_ops_moving(cap, uωv, uγv; periodic=periodic, scheme=scheme)
 	return ops, uωv, uγv
 end
 
@@ -1349,8 +1405,26 @@ end
 
 function _psi_functions(::Type{T}, θ::T) where {T}
 	(zero(T) <= θ <= one(T)) || throw(ArgumentError("numeric θ must satisfy 0 ≤ θ ≤ 1"))
-	psip = (Vn, Vn1) -> (iszero(Vn) && iszero(Vn1) ? zero(T) : θ)
-	psim = (Vn, Vn1) -> (iszero(Vn) && iszero(Vn1) ? zero(T) : (one(T) - θ))
+	psip = (Vn, Vn1) -> begin
+		if iszero(Vn) && iszero(Vn1)
+			return zero(T)
+		elseif iszero(Vn) && Vn1 > zero(T)
+			return one(T) # fresh cell: implicit-only update
+		elseif Vn > zero(T) && iszero(Vn1)
+			return zero(T) # dead cell: no new-state contribution
+		end
+		return θ
+	end
+	psim = (Vn, Vn1) -> begin
+		if iszero(Vn) && iszero(Vn1)
+			return zero(T)
+		elseif iszero(Vn) && Vn1 > zero(T)
+			return zero(T) # fresh cell: no old-state explicit contribution
+		elseif Vn > zero(T) && iszero(Vn1)
+			return one(T) # dead cell: old-state-only contribution
+		end
+		return one(T) - θ
+	end
 	return psip, psim
 end
 
@@ -1566,7 +1640,7 @@ function assemble_unsteady_mono_moving!(
 	uωv, uγv = _velocity_values(cap, model.uω, model.uγ, tθ)
 	wγv = _velocity_tuple_values(cap, model.wγ, cap.C_γ, tθ)
 	uγrel = _relative_interface_velocity(uγv, wγv)
-	ops = advection_ops(cap, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
+	ops = _advection_ops_moving(cap, uωv, uγrel; periodic=model.periodic, scheme=model.scheme)
 	model.ops_slab = ops
 
 	lay = model.layout.offsets
@@ -1669,8 +1743,8 @@ function assemble_unsteady_two_phase_moving!(
 	wγv = _velocity_tuple_values(cap1, model.wγ, cap1.C_γ, tθ)
 	u1γrel = _relative_interface_velocity(u1γv, wγv)
 	u2γrel = _relative_interface_velocity(u2γv, wγv)
-	ops1 = advection_ops(cap1, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
-	ops2 = advection_ops(cap2, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
+	ops1 = _advection_ops_moving(cap1, u1ωv, u1γrel; periodic=model.periodic1, scheme=model.scheme)
+	ops2 = _advection_ops_moving(cap2, u2ωv, u2γrel; periodic=model.periodic2, scheme=model.scheme)
 	model.ops1_slab = ops1
 	model.ops2_slab = ops2
 
