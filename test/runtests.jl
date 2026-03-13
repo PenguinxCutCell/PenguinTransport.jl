@@ -505,29 +505,70 @@ end
         nt = prod(grid.n)
         vel = (fill(U, nt),)
         cst = 1.7
-        model = MovingTransportModelMono(
-            grid, body, vel, vel;
-            wγ=vel,
-            source=0.0,
-            bc_border=BorderConditions(; left=Periodic(), right=Periodic()),
-            bc_interface=nothing,
-            scheme=Upwind1(),
-            geom_method=:vofijul,
-        )
-        res = solve_unsteady_moving!(model, fill(cst, nt), (0.0, 0.1); dt=0.02, scheme=:BE, save_history=false)
-        cap = model.cap_slab
-        @test !(cap === nothing)
-        mask = active_omega_mask(cap)
-        ω = res.states[end][model.layout.offsets.ω]
-        @test all(isfinite, ω[mask])
-        m0 = sum(model.Vn[i] * cst for i in eachindex(model.Vn) if mask[i])
-        m1 = sum(model.Vn1[i] * ω[i] for i in eachindex(model.Vn1) if mask[i])
-        rel_mass = abs(m1 - m0) / max(abs(m0), 1e-14)
-        @test rel_mass < 5e-2
+        for (adv_scheme, time_scheme) in ((Upwind1(), :BE), (Centered(), :CN))
+            model = MovingTransportModelMono(
+                grid, body, vel, vel;
+                wγ=vel,
+                source=0.0,
+                bc_border=BorderConditions(; left=Periodic(), right=Periodic()),
+                bc_interface=nothing,
+                scheme=adv_scheme,
+                geom_method=:vofijul,
+            )
+            res = solve_unsteady_moving!(model, fill(cst, nt), (0.0, 0.1); dt=0.02, scheme=time_scheme, save_history=false)
+            cap = model.cap_slab
+            @test !(cap === nothing)
+            mask = active_omega_mask(cap)
+            ω = res.states[end][model.layout.offsets.ω]
+            @test all(isfinite, ω[mask])
+            max_dev = maximum(abs.(ω[mask] .- cst))
+            @test max_dev < 1e-10
+            m0 = sum(model.Vn[i] * cst for i in eachindex(model.Vn) if mask[i])
+            m1 = sum(model.Vn1[i] * ω[i] for i in eachindex(model.Vn1) if mask[i])
+            rel_mass = abs(m1 - m0) / max(abs(m0), 1e-14)
+            @test rel_mass < 1e-10
+        end
+    end
+
+    @testset "E2. Moving two-phase constant-state geometric sanity" begin
+        grid = CartesianGrid((0.0,), (1.0,), (81,))
+        c = 0.4
+        body1(x, t) = abs(x - (0.5 + c * t)) - 0.18
+        nt = prod(grid.n)
+        vel = (fill(c, nt),)
+        bc = BorderConditions(; left=Periodic(), right=Periodic())
+        c1 = 1.2
+        c2 = -0.7
+        for (adv_scheme, time_scheme) in ((Upwind1(), :BE), (Centered(), :CN))
+            model = MovingTransportModelTwoPhase(
+                grid, body1, vel, vel, vel, vel;
+                wγ=vel,
+                source1=0.0,
+                source2=0.0,
+                bc_border1=bc,
+                bc_border2=bc,
+                scheme=adv_scheme,
+                geom_method=:vofijul,
+            )
+            res = solve_unsteady_moving!(model, (fill(c1, nt), fill(c2, nt)), (0.0, 0.1); dt=0.02, scheme=time_scheme, save_history=false)
+            cap1 = model.cap1_slab
+            cap2 = model.cap2_slab
+            @test !(cap1 === nothing)
+            @test !(cap2 === nothing)
+            lay = model.layout
+            mask1 = active_omega_mask(cap1)
+            mask2 = active_omega_mask(cap2)
+            ω1 = res.states[end][lay.ω1]
+            ω2 = res.states[end][lay.ω2]
+            @test all(isfinite, ω1[mask1])
+            @test all(isfinite, ω2[mask2])
+            @test maximum(abs.(ω1[mask1] .- c1)) < 1e-10
+            @test maximum(abs.(ω2[mask2] .- c2)) < 1e-10
+        end
     end
 
     @testset "F. Moving mono mesh convergence (Upwind1)" begin
-        function run_moving_mono_err(n)
+        function run_moving_mono_err(n, time_scheme)
             grid = CartesianGrid((0.0,), (1.0,), (n,))
             nt = prod(grid.n)
             U = 0.4
@@ -546,7 +587,7 @@ end
             x = collect(range(0.0, 1.0; length=n))
             u0 = sin.(2π .* x)
             dt = 0.4 * (1.0 / (n - 1)) / U
-            res = solve_unsteady_moving!(model, u0, (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+            res = solve_unsteady_moving!(model, u0, (0.0, tend); dt=dt, scheme=time_scheme, save_history=false)
             cap = model.cap_slab
             @test !(cap === nothing)
             ω = res.states[end][model.layout.offsets.ω]
@@ -554,21 +595,24 @@ end
             return _l2_weighted_error(cap, ω, exact)
         end
 
-        errs = [run_moving_mono_err(n) for n in (33, 65, 129)]
-        ord1 = log(errs[1] / errs[2]) / log(2)
-        ord2 = log(errs[2] / errs[3]) / log(2)
-        @test errs[3] < errs[2] < errs[1]
-        @test min(ord1, ord2) >= 0.15
+        for tscheme in (:BE, :CN)
+            errs = [run_moving_mono_err(n, tscheme) for n in (33, 65, 129)]
+            ord1 = log(errs[1] / errs[2]) / log(2)
+            ord2 = log(errs[2] / errs[3]) / log(2)
+            @test errs[3] < errs[2] < errs[1]
+            @test min(ord1, ord2) >= 0.8
+        end
     end
 
     @testset "G. Moving two-phase mesh convergence (Upwind1)" begin
-        function run_moving_two_err(n)
+        function run_moving_two_err(n, time_scheme)
             grid = CartesianGrid((0.0,), (1.0,), (n,))
             nt = prod(grid.n)
             c = 0.4
-            a0 = 0.47
+            a0 = 0.5
+            r = 0.18
             tend = 0.1
-            body1(x, t) = x - (a0 + c * t)
+            body1(x, t) = abs(x - (a0 + c * t)) - r
             vel = (fill(c, nt),)
             bc = BorderConditions(; left=Periodic(), right=Periodic())
             model = MovingTransportModelTwoPhase(
@@ -585,7 +629,7 @@ end
             u01 = sin.(2π .* x)
             u02 = cos.(2π .* x)
             dt = 0.4 * (1.0 / (n - 1)) / c
-            res = solve_unsteady_moving!(model, (u01, u02), (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+            res = solve_unsteady_moving!(model, (u01, u02), (0.0, tend); dt=dt, scheme=time_scheme, save_history=false)
             cap1 = model.cap1_slab
             cap2 = model.cap2_slab
             @test !(cap1 === nothing)
@@ -598,17 +642,19 @@ end
             return _l2_weighted_error(cap1, ω1, ex1), _l2_weighted_error(cap2, ω2, ex2)
         end
 
-        errs = [run_moving_two_err(n) for n in (33, 65, 129)]
-        e1 = [e[1] for e in errs]
-        e2 = [e[2] for e in errs]
-        o11 = log(e1[1] / e1[2]) / log(2)
-        o12 = log(e1[2] / e1[3]) / log(2)
-        o21 = log(e2[1] / e2[2]) / log(2)
-        o22 = log(e2[2] / e2[3]) / log(2)
-        @test e1[3] < e1[2] < e1[1]
-        @test e2[3] < e2[2] < e2[1]
-        @test min(o11, o12) >= 0.15
-        @test min(o21, o22) >= 0.15
+        for tscheme in (:BE, :CN)
+            errs = [run_moving_two_err(n, tscheme) for n in (33, 65, 129)]
+            e1 = [e[1] for e in errs]
+            e2 = [e[2] for e in errs]
+            o11 = log(e1[1] / e1[2]) / log(2)
+            o12 = log(e1[2] / e1[3]) / log(2)
+            o21 = log(e2[1] / e2[2]) / log(2)
+            o22 = log(e2[2] / e2[3]) / log(2)
+            @test e1[3] < e1[2] < e1[1]
+            @test e2[3] < e2[2] < e2[1]
+            @test min(o11, o12) >= 0.8
+            @test min(o21, o22) >= 0.8
+        end
     end
 
     @testset "H. Moving two-phase both-inflow rejection uses relative speeds" begin
@@ -775,6 +821,26 @@ end
     u_neg = omega_view(model_neg, res_neg.states[end])
 
     @test norm(u_pos - u_neg, 2) > 1e-3
+end
+
+@testset "Right-box inflow regression (advection)" begin
+    grid = (0.0:0.05:1.0,)
+    cap = assembled_capacity(full_moments(grid); bc=0.0)
+    nt = cap.ntotal
+
+    # Right inflow with leftward velocity must drive the interior.
+    bc_r = BorderConditions(; left=Outflow(), right=Inflow(1.0))
+    model_r = TransportModelMono(cap, (-ones(nt),), (-ones(nt),); source=0.0, bc_border=bc_r, scheme=Upwind1())
+    res_r = solve_unsteady!(model_r, zeros(nt), (0.0, 2.0); dt=0.02, scheme=:BE, save_history=false)
+    u_r = omega_view(model_r, res_r.states[end])[1:(cap.nnodes[1] - 1)]
+    @test maximum(abs.(u_r)) > 0.2
+
+    # Left inflow mirror case should produce the same bulk state.
+    bc_l = BorderConditions(; left=Inflow(1.0), right=Outflow())
+    model_l = TransportModelMono(cap, (ones(nt),), (ones(nt),); source=0.0, bc_border=bc_l, scheme=Upwind1())
+    res_l = solve_unsteady!(model_l, zeros(nt), (0.0, 2.0); dt=0.02, scheme=:BE, save_history=false)
+    u_l = omega_view(model_l, res_l.states[end])[1:(cap.nnodes[1] - 1)]
+    @test norm(u_r - u_l, Inf) < 5e-3
 end
 
 @testset "Embedded interface no-flow closure" begin

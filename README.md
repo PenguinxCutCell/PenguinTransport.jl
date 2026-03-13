@@ -111,6 +111,59 @@ At a given interface location, if both phases are locally inflow simultaneously,
 - `examples/moving_two_phase_planar_translation.jl`
 - `examples/moving_two_phase_relative_flux_demo.jl`
 
+## Convergence Matrix (Tmp Environment)
+
+Settings used for all rows:
+
+- 1D periodic setup
+- grids: `n = 33, 65, 129`
+- `dt = 0.4 * h / U`, `U = 0.4`, `Tend = 0.1`
+- error: weighted `L2` on active cells
+- exact sampled at final `cap.C_ω`
+- recomputed on `2026-03-13` with `/tmp/pt_convergence_matrix.jl` (post right-inflow outer-BC fix)
+
+### Mono
+
+| Geometry | Interface | Space | Time | e(33) | e(65) | e(129) | p33→65 | p65→129 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| fixed | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
+| fixed | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
+| fixed | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
+| fixed | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
+| fixed | with | Upwind1 | BE | 1.018e+42 | 1.025e+01 | 5.191e+00 | 136.189 | 0.982 |
+| fixed | with | Upwind1 | CN | 3.226e+00 | 2.896e+00 | 3.026e+00 | 0.156 | -0.063 |
+| fixed | with | Centered | BE | 9.250e+41 | 9.375e+00 | 4.875e+00 | 136.180 | 0.943 |
+| fixed | with | Centered | CN | 2.948e+00 | 2.649e+00 | 2.842e+00 | 0.155 | -0.102 |
+| moving | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
+| moving | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
+| moving | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
+| moving | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
+| moving | with | Upwind1 | BE | 4.799e-02 | 2.816e-02 | 1.627e-02 | 0.769 | 0.792 |
+| moving | with | Upwind1 | CN | 4.140e-02 | 2.437e-02 | 1.343e-02 | 0.764 | 0.860 |
+| moving | with | Centered | BE | 2.916e-02 | 1.548e-02 | 8.271e-03 | 0.913 | 0.905 |
+| moving | with | Centered | CN | 2.428e-02 | 1.332e-02 | 6.662e-03 | 0.866 | 0.999 |
+
+### Two-Phase
+
+| Geometry | Interface | Space | Time | e1(33) | e1(65) | e1(129) | p1 33→65 | p1 65→129 | e2(33) | e2(65) | e2(129) | p2 33→65 | p2 65→129 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fixed | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
+| fixed | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
+| fixed | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
+| fixed | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
+| fixed | with | Upwind1 | BE | 1.937e+00 | 1.249e+00 | 1.046e+00 | 0.633 | 0.256 | 2.689e-01 | 2.494e-01 | 1.333e+00 | 0.109 | -2.418 |
+| fixed | with | Upwind1 | CN | 8.571e-01 | 8.710e-01 | 8.767e-01 | -0.023 | -0.010 | 2.092e-01 | 2.180e-01 | 1.036e+00 | -0.059 | -2.248 |
+| fixed | with | Centered | BE | 1.652e+00 | 1.092e+00 | 9.511e-01 | 0.597 | 0.200 | 2.584e-01 | 2.371e-01 | 1.245e+00 | 0.124 | -2.393 |
+| fixed | with | Centered | CN | 7.402e-01 | 7.583e-01 | 7.965e-01 | -0.035 | -0.071 | 2.049e-01 | 2.068e-01 | 9.675e-01 | -0.013 | -2.226 |
+| moving | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
+| moving | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
+| moving | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
+| moving | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
+| moving | with | Upwind1 | BE | 4.799e-02 | 2.816e-02 | 1.627e-02 | 0.769 | 0.792 | 3.214e-02 | 1.903e-02 | 1.100e-02 | 0.756 | 0.791 |
+| moving | with | Upwind1 | CN | 4.140e-02 | 2.437e-02 | 1.343e-02 | 0.764 | 0.860 | 2.697e-02 | 1.564e-02 | 8.935e-03 | 0.786 | 0.808 |
+| moving | with | Centered | BE | 2.916e-02 | 1.548e-02 | 8.271e-03 | 0.913 | 0.905 | 1.779e-02 | 9.742e-03 | 5.180e-03 | 0.869 | 0.911 |
+| moving | with | Centered | CN | 2.428e-02 | 1.332e-02 | 6.662e-03 | 0.866 | 0.999 | 1.415e-02 | 7.693e-03 | 4.074e-03 | 0.879 | 0.917 |
+
 ## Local Docs Build
 
 ```bash
