@@ -38,7 +38,7 @@ Within PenguinxCutCell, `PenguinTransport.jl` sits on top of:
 | Outer BCs | Inflow | Implemented | Dirichlet-type boundary condition |
 | Outer BCs | Outflow | Implemented | Neumann-type boundary condition |
 | Outer BCs | Periodic | Implemented | Periodic boundary condition |
-| Embedded interface | Sign-based closure | Implemented | Fixed: `s = uγ·nγ`; Moving: `λ = (uγ-wγ)·nγ` |
+| Embedded interface | Sign-based closure | Implemented | Fixed: sign from discrete `κ` (from `ops.K`); Moving: sign from discrete relative `κrel` (built with `uγ-wγ`) |
 
 
 ## Pages

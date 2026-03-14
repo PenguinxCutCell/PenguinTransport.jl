@@ -23,7 +23,7 @@ The two-phase ordering is fixed in all public APIs.
 - `ω` rows receive bulk transport + source + (unsteady) time terms
 - `γ` rows enforce local embedded-interface closure
 
-For moving models, interface transport/closure uses relative speed against `wγ`.
+For moving models, interface transport/closure uses the discrete relative interface coefficient assembled with `(uγ-wγ)`.
 
 ## 3. Steady Mono Assembly
 
@@ -84,7 +84,7 @@ The `-(M1-M0)` term carries the pure geometry sweep effect, so no extra standalo
 
 Per-phase `ω` blocks are assembled like mono.
 
-`γ1`/`γ2` rows are selected locally from sign logic (`s1`, `s2`):
+`γ1`/`γ2` rows are selected locally from discrete sign logic (`κ1`, `κ2`):
 
 - one inflow / one outflow: coupling row + outflow continuity row
 - both outflow: continuity on both
@@ -95,8 +95,8 @@ Per-phase `ω` blocks are assembled like mono.
 Same block philosophy as fixed two-phase, but with:
 
 - per-phase moving time terms from `V1n/V1n1`, `V2n/V2n1`
-- interface sign logic based on relative speeds `λ1`, `λ2`
-- both-inflow rejection based on relative signs
+- interface sign logic based on discrete relative coefficients `κ1rel`, `κ2rel`
+- both-inflow rejection based on those discrete signs
 
 Outer box BC logic remains driven by bulk velocities `u1ω`, `u2ω` (not `wγ`).
 

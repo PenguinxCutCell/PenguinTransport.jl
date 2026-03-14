@@ -44,7 +44,7 @@ julia --project=. examples/smooth_blob_translation.jl
 ### `examples/embedded_interface_bc_validation.jl`
 
 - Physical meaning: fixed embedded interface with local inflow/outflow switching.
-- Demonstrates: closure rule from `s = uγ·nγ`.
+- Demonstrates: closure rule from discrete interface coefficient `κ` (from `ops.K`).
 - API: `assemble_steady_mono!` / `solve_unsteady!`.
 - Check: inflow interface cells impose `Tγ=g`; others use continuity.
 
@@ -76,7 +76,7 @@ julia --project=. examples/smooth_blob_translation.jl
 ### `examples/moving_mono_interface_inflow.jl`
 
 - Physical meaning: moving interface with local relative inflow segments.
-- Demonstrates: switching by `λ = (uγ - wγ)·nγ`.
+- Demonstrates: switching by discrete relative coefficient `κrel` (assembled with `uγ-wγ`).
 - API: moving mono assembly/solve.
 - Check: inflow interface data activates only where `λ < 0`.
 
@@ -92,9 +92,9 @@ julia --project=. examples/smooth_blob_translation.jl
 ### `examples/moving_two_phase_relative_flux_demo.jl`
 
 - Physical meaning: relative interface speed pattern changes by phase/time.
-- Demonstrates: closure branch selection from `λ1`, `λ2`.
+- Demonstrates: closure branch selection from discrete `κ1rel`, `κ2rel`.
 - API: moving two-phase assembly path.
-- Check: printed sign pattern matches expected inflow/outflow mode.
+- Check: printed discrete-sign pattern matches expected inflow/outflow mode.
 
 ## Verification Map (Tests ↔ Example Families)
 
@@ -102,7 +102,7 @@ julia --project=. examples/smooth_blob_translation.jl
   - tests: `Convergence order: upwind ≈ 1, centered > 1.5`, moving mesh-trend regressions
   - examples: `manufactured_solution.jl`, `smooth_blob_translation.jl`, `moving_*_translation.jl`
 - Interface-closure validation:
-  - tests: mono sign-based closure, relative-speed regression (`uγ=wγ => λ=0`)
+  - tests: mono sign-based closure, relative-coefficient regression (`uγ=wγ => κrel≈0`)
   - examples: `embedded_interface_bc_validation.jl`, `moving_mono_interface_inflow.jl`
 - Two-phase behavior:
   - tests: two-phase row-pattern, both-inflow rejection (fixed/moving)

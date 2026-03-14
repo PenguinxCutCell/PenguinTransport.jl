@@ -20,11 +20,7 @@ Moving geometry (`Ω(t)`, `Γ(t)`):
 \partial_t \phi + \nabla\cdot(\mathbf{u}_\omega\,\phi) = s \quad \text{in } \Omega(t),
 ```
 
-with interface velocity `wγ` and relative normal speed
-
-```math
-\lambda = (\mathbf{u}_\gamma - \mathbf{w}_\gamma)\cdot \mathbf{n}_\gamma.
-```
+with interface velocity `wγ`; moving embedded-interface transport is assembled with relative interface velocity `(uγ - wγ)`, producing the discrete coefficient `κrel` used by closure logic.
 
 `uω` is bulk velocity, `uγ` is interface-sampled advective velocity, and `φγ` are interface unknowns used for local closure rows.
 
@@ -40,12 +36,7 @@ Fixed geometry:
 \partial_t \phi_2 + \nabla\cdot(\mathbf{u}_{\omega,2}\,\phi_2) = s_2.
 ```
 
-Moving geometry uses `Ω1(t), Ω2(t)` and relative interface speeds:
-
-```math
-\lambda_1 = (\mathbf{u}_{\gamma,1} - \mathbf{w}_\gamma)\cdot \mathbf{n}_{\gamma,1}, \qquad
-\lambda_2 = (\mathbf{u}_{\gamma,2} - \mathbf{w}_\gamma)\cdot \mathbf{n}_{\gamma,2}.
-```
+Moving geometry uses `Ω1(t), Ω2(t)` and per-phase relative interface velocities `(uγ,1-wγ)` and `(uγ,2-wγ)` to assemble discrete coefficients `κ1rel`, `κ2rel` for closure switching.
 
 Unknown ordering is always:
 
@@ -67,29 +58,37 @@ Only inflow boundaries require imposed scalar values.
 
 ## 4. Embedded-Interface Convention
 
-### Fixed geometry sign
+The implementation does not branch from a pointwise `u·n` probe.
+Inflow/outflow switching is done from the same discrete embedded-interface coefficient used by the `ω` rows:
 
 ```math
-s = u_\gamma \cdot n_\gamma.
+\kappa_i = \sum_d \mathrm{diag}(K_d)_i.
 ```
 
-### Moving geometry sign
+### Fixed geometry sign gate
 
 ```math
-\lambda = (u_\gamma - w_\gamma)\cdot n_\gamma.
+\text{fixed gate}:\quad \kappa_i < 0.
+```
+
+### Moving geometry sign gate
+
+```math
+\text{moving gate}:\quad \kappa^{rel}_i < 0,
+\quad \kappa^{rel} \text{ assembled from } (u_\gamma-w_\gamma).
 ```
 
 ### Mono closure
 
-- fixed: if `s < 0` and interface data exist, impose inflow Dirichlet `Tγ = g`
-- moving: if `λ < 0` and interface data exist, impose inflow Dirichlet `Tγ = g`
+- fixed: if `κ < 0` and interface data exist, impose inflow Dirichlet `Tγ = g`
+- moving: if `κrel < 0` and interface data exist, impose inflow Dirichlet `Tγ = g`
 - otherwise use continuity closure `Tγ = Tω`
 
-`|λ|` near machine zero is treated as non-inflow (continuity/outflow behavior).
+`|κ|` / `|κrel|` near machine zero is treated as non-inflow (continuity/outflow behavior).
 
 ### Two-phase closure
 
-Fixed uses `(s1, s2)`, moving uses `(λ1, λ2)` with the same local logic:
+Fixed uses `(κ1, κ2)`, moving uses `(κ1rel, κ2rel)` with the same local logic:
 
 - one inflow / one outflow: conservative transport coupling row on inflow side, continuity closure on outflow side
 - both outflow: continuity closure on both phases
@@ -103,7 +102,7 @@ Moving models are assembled from reduced space-time slabs with physical volumes 
 - geometric sweep is represented by `Vn1 - Vn`
 - no standalone extra geometric flux term is added
 
-This is why moving interface logic uses relative speed in closure and interface advection treatment.
+This is why moving interface logic uses the relative discrete coefficient in closure and interface advection treatment.
 
 ## 6. Callback Conventions
 

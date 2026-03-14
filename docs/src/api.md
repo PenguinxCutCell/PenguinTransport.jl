@@ -95,7 +95,7 @@ Assemble one moving-geometry unsteady slab step.
 
 - Uses reduced slab capacities/operators on `[t, t+dt]`
 - Uses physical volumes `Vn`/`Vn1` in time terms
-- Uses relative interface speed for closure logic: `(uγ - wγ)·nγ`
+- Uses discrete relative interface coefficient for closure logic: `κrel` extracted from slab `ops.K` assembled with `(uγ - wγ)`
 
 ## Solver Wrappers
 
