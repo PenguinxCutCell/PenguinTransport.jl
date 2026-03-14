@@ -63,12 +63,27 @@ function interface_mask(cap1, cap2)
     return mask
 end
 
+function interface_flux_diag(ops)
+    nt = size(ops.K[1], 1)
+    κ = zeros(Float64, nt)
+    for Kd in ops.K
+        κ .+= diag(Kd)
+    end
+    return κ
+end
+
+function coeff_inflow(κi, scale)
+    tol = 100 * eps(Float64) * max(1.0, scale)
+    return κi < -tol
+end
+
 function interface_flux_metrics(model::TransportModelTwoPhase, x)
     cap1 = model.cap1
     cap2 = model.cap2
     lay = model.layout
     nt = cap1.ntotal
-    N = length(cap1.nnodes)
+    κ1 = interface_flux_diag(model.ops1)
+    κ2 = interface_flux_diag(model.ops2)
     num_abs = 0.0
     den_abs = 0.0
     sum_signed = 0.0
@@ -78,18 +93,12 @@ function interface_flux_metrics(model::TransportModelTwoPhase, x)
         Γ2 = cap2.buf.Γ[i]
         Γ = 0.5 * (Γ1 + Γ2)
         (isfinite(Γ) && Γ > 0) || continue
-        s1 = 0.0
-        s2 = 0.0
-        for d in 1:N
-            s1 += model.u1γ[d][i] * cap1.n_γ[i][d]
-            s2 += model.u2γ[d][i] * cap2.n_γ[i][d]
-        end
         T1γ = x[lay.γ1[i]]
         T2γ = x[lay.γ2[i]]
-        r = Γ * (s1 * T1γ + s2 * T2γ)
+        r = κ1[i] * T1γ + κ2[i] * T2γ
         sum_signed += r
         num_abs += abs(r)
-        den_abs += abs(Γ * s1 * T1γ) + abs(Γ * s2 * T2γ)
+        den_abs += abs(κ1[i] * T1γ) + abs(κ2[i] * T2γ)
         niface += 1
     end
     return (
@@ -308,7 +317,7 @@ end
         @test occursin("both-inflow local configuration", sprint(showerror, err))
     end
 
-    @testset "Sign-convention regression: positive inflow data gives negative steady state" begin
+    @testset "Outer inflow sign regression: positive inflow gives positive steady state" begin
         grid = (0.0:0.05:1.0,)
         cap = assembled_capacity(full_moments(grid); bc=0.0)
         nt = cap.ntotal
@@ -319,8 +328,7 @@ end
         ω = omega_view(model, sys.x)
         mask = active_omega_mask(cap)
 
-        # Current transport operator convention maps positive imposed inflow value g to -g in the solved scalar.
-        @test maximum(abs.(ω[mask] .+ g)) < 1e-12
+        @test maximum(abs.(ω[mask] .- g)) < 1e-12
     end
 end
 
@@ -663,14 +671,13 @@ end
         moms1 = geometric_moments(body_space, grid_space, Float64, nan; method=:vofijul)
         cap1_ref = assembled_capacity(moms1; bc=0.0)
         nt = cap1_ref.ntotal
-        n1 = [cap1_ref.n_γ[i][1] for i in 1:nt]
 
         grid = CartesianGrid((0.0,), (1.0,), (65,))
         body_time(x, t) = x - 0.53
         z = zeros(nt)
         u1γ = (z,)
-        u2γ = ([2.0 * n1[i] for i in 1:nt],)
-        wγ = ([n1[i] for i in 1:nt],)
+        u2γ = (2.0 .* ones(nt),)
+        wγ = (ones(nt),)
 
         model = MovingTransportModelTwoPhase(
             grid, body_time, (z,), u1γ, (z,), u2γ;
@@ -942,6 +949,125 @@ end
     @test n_iface > 0
 end
 
+@testset "Embedded interface Upwind1 ω-row split uses donor state (steady)" begin
+    grid = (0.0:0.1:1.0, 0.0:0.1:1.0)
+    cap = assembled_capacity(circle_moments(grid); bc=0.0)
+    nt = cap.ntotal
+    lay = layout_mono(nt).offsets
+
+    z = zeros(nt)
+    model = TransportModelMono(cap, (z, z), (ones(nt), z); bc_interface=Inflow(2.0), scheme=Upwind1())
+    sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
+    assemble_steady_mono!(sys, model, 0.0)
+
+    κ = interface_flux_diag(model.ops)
+    tol = 100 * eps(Float64)
+    n_in = 0
+    n_out = 0
+    mask = active_omega_mask(cap)
+    for i in 1:nt
+        Γ = cap.buf.Γ[i]
+        (isfinite(Γ) && Γ > 0 && mask[i]) || continue
+        κi = κ[i]
+        r = lay.ω[i]
+        if coeff_inflow(κi, abs(κi))
+            n_in += 1
+            @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-12
+            @test sys.A[r, lay.γ[i]] ≈ κi atol=1e-12
+        elseif κi > tol * max(1.0, abs(κi))
+            n_out += 1
+            @test sys.A[r, lay.ω[i]] ≈ κi atol=1e-12
+            @test sys.A[r, lay.γ[i]] ≈ 0.0 atol=1e-12
+        end
+    end
+
+    @test n_in > 0
+    @test n_out > 0
+end
+
+@testset "Embedded interface Upwind1 ω-row split uses donor state (moving relative velocity)" begin
+    grid = CartesianGrid((0.0, 0.0), (1.0, 1.0), (21, 21))
+    nt = prod(grid.n)
+    body(x, y, t) = sqrt((x - 0.5)^2 + (y - 0.5)^2) - 0.22
+
+    z = zeros(nt)
+    uω = (z, z)
+    uγ = (ones(nt), z)
+    wγ = (0.3 .* ones(nt), z)
+    model = MovingTransportModelMono(
+        grid, body, uω, uγ;
+        wγ=wγ,
+        source=0.0,
+        bc_border=BorderConditions(; left=Outflow(), right=Outflow(), bottom=Outflow(), top=Outflow()),
+        bc_interface=Inflow(1.0),
+        scheme=Upwind1(),
+        geom_method=:vofijul,
+    )
+
+    lay = model.layout.offsets
+    sys = LinearSystem(spzeros(Float64, last(lay.γ), last(lay.γ)), zeros(Float64, last(lay.γ)))
+    assemble_unsteady_mono_moving!(sys, model, zeros(nt), 0.0, 0.05, :BE)
+
+    cap = model.cap_slab
+    @test !(cap === nothing)
+    ops = model.ops_slab
+    @test !(ops === nothing)
+    dV = [abs(model.Vn1[i] - model.Vn[i]) for i in eachindex(model.Vn) if isfinite(model.Vn1[i]) && isfinite(model.Vn[i])]
+    @test !isempty(dV)
+    @test maximum(dV) < 1e-12
+
+    κrel = interface_flux_diag(ops)
+    tol = 100 * eps(Float64)
+    n_in = 0
+    n_out = 0
+    mask = active_omega_mask(cap)
+    for i in 1:nt
+        Γ = cap.buf.Γ[i]
+        (isfinite(Γ) && Γ > 0 && mask[i]) || continue
+        κi = κrel[i]
+        r = lay.ω[i]
+        if coeff_inflow(κi, abs(κi))
+            n_in += 1
+            @test (sys.A[r, lay.ω[i]] - model.Vn1[i]) ≈ 0.0 atol=1e-10
+            @test sys.A[r, lay.γ[i]] ≈ κi atol=1e-10
+        elseif κi > tol * max(1.0, abs(κi))
+            n_out += 1
+            @test (sys.A[r, lay.ω[i]] - model.Vn1[i]) ≈ κi atol=1e-10
+            @test sys.A[r, lay.γ[i]] ≈ 0.0 atol=1e-10
+        end
+    end
+
+    @test n_in > 0
+    @test n_out > 0
+end
+
+@testset "Embedded inflow end-to-end regression (Centered and Upwind1)" begin
+    x0 = 0.47
+    grid = (0.0:0.05:1.0,)
+    cap = assembled_capacity(planar_moments_left(grid; x0=x0); bc=0.0)
+    nt = cap.ntotal
+    gγ = 1.1
+
+    uω = (ones(nt),)
+    uγ = (-ones(nt),)
+    bc = BorderConditions(; left=Inflow(0.0), right=Outflow())
+
+    model_c = TransportModelMono(cap, uω, uγ; source=0.0, bc_border=bc, bc_interface=Inflow(gγ), scheme=Centered())
+    model_u = TransportModelMono(cap, uω, uγ; source=0.0, bc_border=bc, bc_interface=Inflow(gγ), scheme=Upwind1())
+
+    sys_c = solve_steady!(model_c)
+    sys_u = solve_steady!(model_u)
+    ωc = omega_view(model_c, sys_c.x)
+    ωu = omega_view(model_u, sys_u.x)
+    mask = active_omega_mask(cap)
+
+    @test all(isfinite, ωc[mask])
+    @test all(isfinite, ωu[mask])
+    @test norm(ωu[mask] - ωc[mask], Inf) > 1e-6
+    @test maximum(ωu[mask]) > 0.25 * gγ
+    @test minimum(ωu[mask]) > -1e-10
+end
+
 @testset "Time-dependent embedded inflow disables constant reuse" begin
     grid = (0.0:0.2:1.0, 0.0:0.2:1.0)
     cap = assembled_capacity(circle_moments(grid); bc=0.0)
@@ -978,6 +1104,8 @@ end
     sys = LinearSystem(spzeros(Float64, 4 * nt, 4 * nt), zeros(Float64, 4 * nt))
     assemble_steady_two_phase!(sys, model, 0.0)
     lay = model.layout
+    κ1 = interface_flux_diag(model.ops1)
+    κ2 = interface_flux_diag(model.ops2)
 
     checked = 0
     for i in 1:nt
@@ -986,14 +1114,14 @@ end
         Γ = 0.5 * (Γ1 + Γ2)
         (isfinite(Γ) && Γ > 0) || continue
 
-        s1 = u1γ[1][i] * cap1.n_γ[i][1] + u1γ[2][i] * cap1.n_γ[i][2]
-        s2 = u2γ[1][i] * cap2.n_γ[i][1] + u2γ[2][i] * cap2.n_γ[i][2]
-        @test s1 < 0
-        @test s2 > 0
+        in1 = coeff_inflow(κ1[i], max(abs(κ1[i]), abs(κ2[i])))
+        in2 = coeff_inflow(κ2[i], max(abs(κ1[i]), abs(κ2[i])))
+        @test in1
+        @test !in2
 
         r_flux = lay.γ1[i]
-        @test sys.A[r_flux, lay.γ1[i]] ≈ Γ * s1 atol=1e-12
-        @test sys.A[r_flux, lay.γ2[i]] ≈ Γ * s2 atol=1e-12
+        @test sys.A[r_flux, lay.γ1[i]] ≈ κ1[i] atol=1e-12
+        @test sys.A[r_flux, lay.γ2[i]] ≈ κ2[i] atol=1e-12
         @test sys.A[r_flux, lay.ω1[i]] ≈ 0.0 atol=1e-12
         @test sys.A[r_flux, lay.ω2[i]] ≈ 0.0 atol=1e-12
         @test sys.b[r_flux] ≈ 0.0 atol=1e-12
@@ -1086,7 +1214,7 @@ end
     @test res.reused_constant_operator == true
 end
 
-@testset "Two-phase interface local conservation (steady solve)" begin
+@testset "Two-phase interface local conservation (unsteady solve)" begin
     grid = (0.0:0.05:1.0,)
     cap1 = assembled_capacity(planar_moments_left(grid; x0=0.47); bc=0.0)
     cap2 = assembled_capacity(planar_moments_right(grid; x0=0.47); bc=0.0)
@@ -1102,8 +1230,9 @@ end
         bc_border2=BorderConditions(; left=Outflow(), right=Outflow()),
         scheme=Upwind1(),
     )
-    sys = solve_steady!(model)
-    met = interface_flux_metrics(model, sys.x)
+    res = solve_unsteady!(model, (zeros(nt), zeros(nt)), (0.0, 0.2); dt=0.05, scheme=:BE, save_history=false)
+    xf = res.states[end]
+    met = interface_flux_metrics(model, xf)
     @test met.niface > 0
     @test abs(met.sum_signed) < 1e-12
     @test met.rel_abs < 1e-12
@@ -1128,24 +1257,25 @@ end
         bc_border2=BorderConditions(; left=Outflow(), right=Outflow()),
         scheme=Upwind1(),
     )
-    sys = solve_steady!(model)
+    res = solve_unsteady!(model, (zeros(nt), zeros(nt)), (0.0, 2.0); dt=0.01, scheme=:BE, save_history=false)
+    x = res.states[end]
     lay = model.layout
+    κ1 = interface_flux_diag(model.ops1)
+    κ2 = interface_flux_diag(model.ops2)
     iface = findall(interface_mask(cap1, cap2))
     @test !isempty(iface)
     for i in iface
-        s1 = model.u1γ[1][i] * cap1.n_γ[i][1]
-        s2 = model.u2γ[1][i] * cap2.n_γ[i][1]
-        T1γ = sys.x[lay.γ1[i]]
-        T2γ = sys.x[lay.γ2[i]]
-        @test abs(s1 * T1γ + s2 * T2γ) < 1e-12
-        @test abs(T2γ - (-(s1 / s2)) * T1γ) < 1e-12
+        T1γ = x[lay.γ1[i]]
+        T2γ = x[lay.γ2[i]]
+        @test abs(κ1[i] * T1γ + κ2[i] * T2γ) < 1e-12
+        @test abs(T2γ - (-(κ1[i] / κ2[i])) * T1γ) < 1e-12
     end
 
-    # Upstream phase-1 region should remain constant (solver sign convention gives -g).
-    ω1 = sys.x[lay.ω1]
-    e_up, n_up = _linf_error_region(cap1, ω1, -g, x -> x <= x0 - 2dx)
+    # Upstream phase-1 region should remain at the imposed inflow value.
+    ω1 = x[lay.ω1]
+    e_up, n_up = _linf_error_region(cap1, ω1, g, x -> x <= x0 - 2dx)
     @test n_up > 0
-    @test e_up < 1e-12
+    @test e_up < 1e-8
 end
 
 @testset "Two-phase 1D planar source in phase 1 transfers interface flux" begin
@@ -1178,21 +1308,23 @@ end
         scheme=Upwind1(),
     )
 
-    sys0 = solve_steady!(model0)
-    sysσ = solve_steady!(modelσ)
+    res0 = solve_unsteady!(model0, (zeros(nt), zeros(nt)), (0.0, 2.0); dt=0.01, scheme=:BE, save_history=false)
+    resσ = solve_unsteady!(modelσ, (zeros(nt), zeros(nt)), (0.0, 2.0); dt=0.01, scheme=:BE, save_history=false)
+    state0 = res0.states[end]
+    stateσ = resσ.states[end]
     lay = model0.layout
     iface = findall(interface_mask(cap1, cap2))
     @test length(iface) == 1
     i = iface[1]
 
-    met0 = interface_flux_metrics(model0, sys0.x)
-    metσ = interface_flux_metrics(modelσ, sysσ.x)
+    met0 = interface_flux_metrics(model0, state0)
+    metσ = interface_flux_metrics(modelσ, stateσ)
     @test met0.rel_abs < 1e-12
     @test metσ.rel_abs < 1e-12
 
     # With positive source in phase 1, interface values shift consistently.
-    @test sysσ.x[lay.γ1[i]] > sys0.x[lay.γ1[i]]
-    @test sysσ.x[lay.γ2[i]] > sys0.x[lay.γ2[i]]
+    @test stateσ[lay.γ1[i]] > state0[lay.γ1[i]]
+    @test stateσ[lay.γ2[i]] > state0[lay.γ2[i]]
 end
 
 @testset "Two-phase reversed-flow row selection is not phase-biased" begin
@@ -1214,19 +1346,21 @@ end
     sys = LinearSystem(spzeros(Float64, 4 * nt, 4 * nt), zeros(Float64, 4 * nt))
     assemble_steady_two_phase!(sys, model, 0.0)
     lay = model.layout
+    κ1 = interface_flux_diag(model.ops1)
+    κ2 = interface_flux_diag(model.ops2)
 
     iface = findall(interface_mask(cap1, cap2))
     @test !isempty(iface)
     for i in iface
         Γ = 0.5 * (cap1.buf.Γ[i] + cap2.buf.Γ[i])
-        s1 = model.u1γ[1][i] * cap1.n_γ[i][1]
-        s2 = model.u2γ[1][i] * cap2.n_γ[i][1]
-        @test s1 < 0
-        @test s2 > 0
+        in1 = coeff_inflow(κ1[i], max(abs(κ1[i]), abs(κ2[i])))
+        in2 = coeff_inflow(κ2[i], max(abs(κ1[i]), abs(κ2[i])))
+        @test in1
+        @test !in2
         # Reversed flow branch should place flux equation on γ1 and closure on γ2.
         r1 = lay.γ1[i]
-        @test sys.A[r1, lay.γ1[i]] ≈ Γ * s1 atol=1e-12
-        @test sys.A[r1, lay.γ2[i]] ≈ Γ * s2 atol=1e-12
+        @test sys.A[r1, lay.γ1[i]] ≈ κ1[i] atol=1e-12
+        @test sys.A[r1, lay.γ2[i]] ≈ κ2[i] atol=1e-12
         @test sys.A[r1, lay.ω1[i]] ≈ 0.0 atol=1e-12
         @test sys.A[r1, lay.ω2[i]] ≈ 0.0 atol=1e-12
 

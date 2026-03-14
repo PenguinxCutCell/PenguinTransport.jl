@@ -542,6 +542,28 @@ function _advection_ops_moving(
 	return AdvectionOps{N,T}(C, K, H, cap.V, nnodes)
 end
 
+function _interface_flux_diag(ops::AdvectionOps{N,T}) where {N,T}
+	nt = size(ops.K[1], 1)
+	κ = zeros(T, nt)
+	@inbounds for d in 1:N
+		κ .+= diag(ops.K[d])
+	end
+	return κ
+end
+
+function _split_interface_flux(κ::AbstractVector{T}, ::Centered) where {T}
+	half = convert(T, 0.5)
+	return half .* κ, half .* κ
+end
+
+function _split_interface_flux(κ::AbstractVector{T}, ::Upwind1) where {T}
+	return max.(κ, zero(T)), min.(κ, zero(T))
+end
+
+function _split_interface_flux(::AbstractVector, scheme::AdvectionScheme)
+	throw(ArgumentError("unknown advection scheme $(typeof(scheme))"))
+end
+
 _relative_speed_atol(::Type{T}) where {T} = convert(T, 100) * eps(T)
 
 function _eval_levelset_time(body, x::SVector{N,T}, t::T) where {N,T}
@@ -909,10 +931,11 @@ end
 
 function _interface_closure(
 	model::TransportModelMono{N,T},
-	uγ::NTuple{N,Vector{T}},
+	κ::AbstractVector{T},
 	t::T,
 ) where {N,T}
 	nt = model.cap.ntotal
+	length(κ) == nt || throw(DimensionMismatch("interface coefficient length must be $nt"))
 	a21 = zeros(T, nt)
 	a22 = zeros(T, nt)
 	b2 = zeros(T, nt)
@@ -926,12 +949,8 @@ function _interface_closure(
 			continue
 		end
 
-		s = zero(T)
-		@inbounds for d in 1:N
-			s += uγ[d][lin] * model.cap.n_γ[lin][d]
-		end
-
-		if s < zero(T)
+		κi = κ[lin]
+		if _is_inflow_coeff(κi, abs(κi))
 			g = _interface_inflow_value(model.bc_interface, model.cap.C_γ[lin], t)
 			if g !== nothing
 				a22[lin] = Γ
@@ -946,19 +965,20 @@ function _interface_closure(
 	return spdiagm(0 => a21), spdiagm(0 => a22), b2
 end
 
-function _is_relative_inflow(λ::T, scale::T) where {T}
+function _is_inflow_coeff(κi::T, scale::T) where {T}
+	isfinite(κi) || return false
 	tol = _relative_speed_atol(T) * max(one(T), scale)
-	return λ < -tol
+	return κi < -tol
 end
 
 function _interface_closure_moving(
 	model::MovingTransportModelMono{N,T},
 	cap::AssembledCapacity{N,T},
-	uγ::NTuple{N,Vector{T}},
-	wγ::NTuple{N,Vector{T}},
+	κrel::AbstractVector{T},
 	t::T,
 ) where {N,T}
 	nt = cap.ntotal
+	length(κrel) == nt || throw(DimensionMismatch("relative interface coefficient length must be $nt"))
 	a21 = zeros(T, nt)
 	a22 = zeros(T, nt)
 	b2 = zeros(T, nt)
@@ -972,16 +992,8 @@ function _interface_closure_moving(
 			continue
 		end
 
-		λ = zero(T)
-		scale = zero(T)
-		@inbounds for d in 1:N
-			ud = uγ[d][lin]
-			wd = wγ[d][lin]
-			λ += (ud - wd) * cap.n_γ[lin][d]
-			scale += abs(ud) + abs(wd)
-		end
-
-		if _is_relative_inflow(λ, scale)
+		κi = κrel[lin]
+		if _is_inflow_coeff(κi, abs(κi))
 			g = _interface_inflow_value(model.bc_interface, cap.C_γ[lin], t)
 			if g !== nothing
 				a22[lin] = Γ
@@ -998,12 +1010,14 @@ end
 
 function _interface_closure_two_phase(
 	model::TransportModelTwoPhase{N,T},
-	u1γ::NTuple{N,Vector{T}},
-	u2γ::NTuple{N,Vector{T}},
+	κ1::AbstractVector{T},
+	κ2::AbstractVector{T},
 	t::T,
 ) where {N,T}
 	_ = t
 	nt = model.cap1.ntotal
+	length(κ1) == nt || throw(DimensionMismatch("phase-1 interface coefficient length must be $nt"))
+	length(κ2) == nt || throw(DimensionMismatch("phase-2 interface coefficient length must be $nt"))
 	b21 = zeros(T, nt)
 	b22 = zeros(T, nt)
 	b23 = zeros(T, nt)
@@ -1030,29 +1044,28 @@ function _interface_closure_two_phase(
 		Γ = convert(T, 0.5) * (Γ1 + Γ2)
 		(isfinite(Γ) && Γ > zero(T)) || continue
 
-		s1 = zero(T)
-		s2 = zero(T)
-		@inbounds for d in 1:N
-			s1 += u1γ[d][lin] * model.cap1.n_γ[lin][d]
-			s2 += u2γ[d][lin] * model.cap2.n_γ[lin][d]
-		end
+		κ1i = κ1[lin]
+		κ2i = κ2[lin]
+		scale = max(isfinite(κ1i) ? abs(κ1i) : zero(T), isfinite(κ2i) ? abs(κ2i) : zero(T))
+		in1 = _is_inflow_coeff(κ1i, scale)
+		in2 = _is_inflow_coeff(κ2i, scale)
 
-		if s1 < zero(T) && s2 < zero(T)
+		if in1 && in2
 			throw(ArgumentError("two-phase transport interface is locally ill-posed (both-inflow local configuration) at Γ cell $lin"))
-		elseif s1 < zero(T) && s2 >= zero(T)
-			# gamma1 row: flux continuity; gamma2 row: phase-2 outflow closure
-			b22[lin] = Γ * s1
-			b24[lin] = Γ * s2
+		elseif in1 && !in2
+			# gamma1 row: phase-1 inflow receives discrete flux continuity.
+			b22[lin] = κ1i
+			b24[lin] = κ2i
 			b43[lin] = -Γ
 			b44[lin] = Γ
-		elseif s2 < zero(T) && s1 >= zero(T)
-			# gamma2 row: flux continuity; gamma1 row: phase-1 outflow closure
+		elseif in2 && !in1
+			# gamma2 row: phase-2 inflow receives discrete flux continuity.
 			b21[lin] = -Γ
 			b22[lin] = Γ
-			b42[lin] = Γ * s1
-			b44[lin] = Γ * s2
+			b42[lin] = κ1i
+			b44[lin] = κ2i
 		else
-			# both outflow: continuity on each phase
+			# both outflow (or near zero): continuity on each phase.
 			b21[lin] = -Γ
 			b22[lin] = Γ
 			b43[lin] = -Γ
@@ -1071,13 +1084,14 @@ function _interface_closure_two_phase_moving(
 	model::MovingTransportModelTwoPhase{N,T},
 	cap1::AssembledCapacity{N,T},
 	cap2::AssembledCapacity{N,T},
-	u1γ::NTuple{N,Vector{T}},
-	u2γ::NTuple{N,Vector{T}},
-	wγ::NTuple{N,Vector{T}},
+	κ1rel::AbstractVector{T},
+	κ2rel::AbstractVector{T},
 	t::T,
 ) where {N,T}
 	_ = t
 	nt = cap1.ntotal
+	length(κ1rel) == nt || throw(DimensionMismatch("phase-1 relative interface coefficient length must be $nt"))
+	length(κ2rel) == nt || throw(DimensionMismatch("phase-2 relative interface coefficient length must be $nt"))
 	b21 = zeros(T, nt)
 	b22 = zeros(T, nt)
 	b23 = zeros(T, nt)
@@ -1104,36 +1118,26 @@ function _interface_closure_two_phase_moving(
 		Γ = convert(T, 0.5) * (Γ1 + Γ2)
 		(isfinite(Γ) && Γ > zero(T)) || continue
 
-		λ1 = zero(T)
-		λ2 = zero(T)
-		scale1 = zero(T)
-		scale2 = zero(T)
-		@inbounds for d in 1:N
-			wd = wγ[d][lin]
-			u1d = u1γ[d][lin]
-			u2d = u2γ[d][lin]
-			λ1 += (u1d - wd) * cap1.n_γ[lin][d]
-			λ2 += (u2d - wd) * cap2.n_γ[lin][d]
-			scale1 += abs(u1d) + abs(wd)
-			scale2 += abs(u2d) + abs(wd)
-		end
-		in1 = _is_relative_inflow(λ1, scale1)
-		in2 = _is_relative_inflow(λ2, scale2)
+		κ1i = κ1rel[lin]
+		κ2i = κ2rel[lin]
+		scale = max(isfinite(κ1i) ? abs(κ1i) : zero(T), isfinite(κ2i) ? abs(κ2i) : zero(T))
+		in1 = _is_inflow_coeff(κ1i, scale)
+		in2 = _is_inflow_coeff(κ2i, scale)
 
 		if in1 && in2
 			throw(ArgumentError("moving two-phase transport interface is locally ill-posed (both-inflow local configuration from relative speeds) at Γ cell $lin"))
 		elseif in1 && !in2
-			# gamma1 row: relative-flux continuity; gamma2 row: phase-2 outflow closure
-			b22[lin] = Γ * λ1
-			b24[lin] = Γ * λ2
+			# gamma1 row: phase-1 relative inflow receives discrete flux continuity.
+			b22[lin] = κ1i
+			b24[lin] = κ2i
 			b43[lin] = -Γ
 			b44[lin] = Γ
 		elseif in2 && !in1
-			# gamma2 row: relative-flux continuity; gamma1 row: phase-1 outflow closure
+			# gamma2 row: phase-2 relative inflow receives discrete flux continuity.
 			b21[lin] = -Γ
 			b22[lin] = Γ
-			b42[lin] = Γ * λ1
-			b44[lin] = Γ * λ2
+			b42[lin] = κ1i
+			b44[lin] = κ2i
 		else
 			# both relative-outflow (or near zero): continuity on each phase
 			b21[lin] = -Γ
@@ -1205,9 +1209,9 @@ function apply_box_bc_transport_mono!(
 				g = convert(T, eval_bc(side_bc.value, xface, t))
 
 				if adv_scheme isa Centered
-					b[row] += (un * Aface) * (g / convert(T, 2))
+					b[row] -= (un * Aface) * (g / convert(T, 2))
 				elseif adv_scheme isa Upwind1
-					b[row] += (un * Aface) * g
+					b[row] -= (un * Aface) * g
 				else
 					throw(ArgumentError("unknown advection scheme $(typeof(adv_scheme))"))
 				end
@@ -1281,17 +1285,23 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 	_validate_mono_layout(model.cap, lay)
 	nsys = maximum((last(lay.ω), last(lay.γ)))
 
-	ops, uωv, uγv = _ops_for_time(model, t)
+	ops, uωv, _ = _ops_for_time(model, t)
 	model.ops = ops
 
+	# Transport assembly mirrors the diffusion block structure:
+	# - ops.C: bulk face transport on ω rows
+	# - ops.K: embedded-interface transport contribution to ω rows
+	# γ rows remain closure/transmission equations for interface unknowns.
+	# The advection scheme only changes how κ is split between Tω and Tγ.
 	conv_bulk = reduce(+, ops.C)
-	conv_iface = convert(T, 0.5) * reduce(+, ops.K)
+	κ = _interface_flux_diag(ops)
+	κω, κγ = _split_interface_flux(κ, model.scheme)
+	A11 = conv_bulk + spdiagm(0 => κω)
+	A12 = spdiagm(0 => κγ)
 
 	fω = _source_values(model.cap, model.source, t)
 	b1 = model.cap.V * fω
-	A21, A22, b2 = _interface_closure(model, uγv, t)
-	A11 = conv_bulk + conv_iface
-	A12 = conv_iface
+	A21, A22, b2 = _interface_closure(model, κ, t)
 
 	A, b = if _is_canonical_mono_layout(lay, nt)
 		([A11 A12; A21 A22], vcat(b1, b2))
@@ -1329,26 +1339,28 @@ function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelT
 	_validate_two_phase_layout(model.cap1, model.cap2, lay)
 	nsys = maximum((last(lay.ω1), last(lay.γ1), last(lay.ω2), last(lay.γ2)))
 
-	ops1, u1ωv, u1γv = _ops_for_time(model.cap1, model.u1ω, model.u1γ, model.periodic1, model.scheme, t)
-	ops2, u2ωv, u2γv = _ops_for_time(model.cap2, model.u2ω, model.u2γ, model.periodic2, model.scheme, t)
+	ops1, u1ωv, _ = _ops_for_time(model.cap1, model.u1ω, model.u1γ, model.periodic1, model.scheme, t)
+	ops2, u2ωv, _ = _ops_for_time(model.cap2, model.u2ω, model.u2γ, model.periodic2, model.scheme, t)
 	model.ops1 = ops1
 	model.ops2 = ops2
 
 	conv_bulk1 = reduce(+, ops1.C)
-	conv_iface1 = convert(T, 0.5) * reduce(+, ops1.K)
-	A11 = conv_bulk1 + conv_iface1
-	A12 = conv_iface1
+	κ1 = _interface_flux_diag(ops1)
+	κ1ω, κ1γ = _split_interface_flux(κ1, model.scheme)
+	A11 = conv_bulk1 + spdiagm(0 => κ1ω)
+	A12 = spdiagm(0 => κ1γ)
 	f1 = _source_values(model.cap1, model.source1, t)
 	b1 = model.cap1.V * f1
 
 	conv_bulk2 = reduce(+, ops2.C)
-	conv_iface2 = convert(T, 0.5) * reduce(+, ops2.K)
-	A33 = conv_bulk2 + conv_iface2
-	A34 = conv_iface2
+	κ2 = _interface_flux_diag(ops2)
+	κ2ω, κ2γ = _split_interface_flux(κ2, model.scheme)
+	A33 = conv_bulk2 + spdiagm(0 => κ2ω)
+	A34 = spdiagm(0 => κ2γ)
 	f2 = _source_values(model.cap2, model.source2, t)
 	b3 = model.cap2.V * f2
 
-	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 = _interface_closure_two_phase(model, u1γv, u2γv, t)
+	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 = _interface_closure_two_phase(model, κ1, κ2, t)
 
 	A = spzeros(T, nsys, nsys)
 	b = zeros(T, nsys)
@@ -1664,11 +1676,12 @@ function assemble_unsteady_mono_moving!(
 	end
 
 	conv_bulk = reduce(+, ops.C)
-	conv_iface = convert(T, 0.5) * reduce(+, ops.K)
-	Adv11 = conv_bulk + conv_iface
-	Adv12 = conv_iface
+	κrel = _interface_flux_diag(ops)
+	κω, κγ = _split_interface_flux(κrel, model.scheme)
+	Adv11 = conv_bulk + spdiagm(0 => κω)
+	Adv12 = spdiagm(0 => κγ)
 	fω = _source_values(cap, model.source, tθ)
-	A21, A22, b2 = _interface_closure_moving(model, cap, uγv, wγv, tθ)
+	A21, A22, b2 = _interface_closure_moving(model, cap, κrel, tθ)
 
 	M1 = spdiagm(0 => model.Vn1)
 	M0 = spdiagm(0 => model.Vn)
@@ -1755,19 +1768,21 @@ function assemble_unsteady_two_phase_moving!(
 	ufull = _as_full_state_two_phase_moving(model, uⁿ)
 
 	conv_bulk1 = reduce(+, ops1.C)
-	conv_iface1 = convert(T, 0.5) * reduce(+, ops1.K)
-	Adv11 = conv_bulk1 + conv_iface1
-	Adv12 = conv_iface1
+	κ1rel = _interface_flux_diag(ops1)
+	κ1ω, κ1γ = _split_interface_flux(κ1rel, model.scheme)
+	Adv11 = conv_bulk1 + spdiagm(0 => κ1ω)
+	Adv12 = spdiagm(0 => κ1γ)
 	f1 = _source_values(cap1, model.source1, tθ)
 
 	conv_bulk2 = reduce(+, ops2.C)
-	conv_iface2 = convert(T, 0.5) * reduce(+, ops2.K)
-	Adv33 = conv_bulk2 + conv_iface2
-	Adv34 = conv_iface2
+	κ2rel = _interface_flux_diag(ops2)
+	κ2ω, κ2γ = _split_interface_flux(κ2rel, model.scheme)
+	Adv33 = conv_bulk2 + spdiagm(0 => κ2ω)
+	Adv34 = spdiagm(0 => κ2γ)
 	f2 = _source_values(cap2, model.source2, tθ)
 
 	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 =
-		_interface_closure_two_phase_moving(model, cap1, cap2, u1γv, u2γv, wγv, tθ)
+		_interface_closure_two_phase_moving(model, cap1, cap2, κ1rel, κ2rel, tθ)
 
 	M1n1 = spdiagm(0 => model.V1n1)
 	M1n = spdiagm(0 => model.V1n)

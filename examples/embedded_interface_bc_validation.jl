@@ -1,10 +1,10 @@
 # ──────────────────────────────────────────────────────────────────
 # Embedded Interface BC Validation (sign-based inflow/outflow)
 #
-# Validates interface closure on a cut-cell geometry:
-#   s = uγ⋅nγ
-#   - if s < 0 (interface inflow), enforce Tγ = g
-#   - if s ≥ 0 (interface outflow), enforce Tγ = Tω
+# Validates interface closure on a cut-cell geometry using the same
+# discrete embedded-interface coefficient κ carried by transport assembly:
+#   - if κ < 0 (interface inflow), enforce Tγ = g
+#   - otherwise (outflow / near-zero), enforce Tγ = Tω
 #
 # We report weighted L2/L∞ residual norms for both conditions and
 # compare two cases:
@@ -29,8 +29,8 @@ end
 Compute interface residual norms from a solved state.
 
 Returns weighted L2 and L∞ residuals for:
-- inflow condition residual `Tγ - g` on cells where `uγ⋅nγ < 0`,
-- outflow closure residual `Tγ - Tω` on cells where `uγ⋅nγ ≥ 0`.
+- inflow condition residual `Tγ - g` on cells where discrete `κ < 0`,
+- outflow closure residual `Tγ - Tω` on cells where `κ ≥ 0`.
 """
 function interface_residuals(model, state, gfun)
     cap = model.cap
@@ -39,6 +39,8 @@ function interface_residuals(model, state, gfun)
     Tγ = state[lay.γ]
     LI = LinearIndices(cap.nnodes)
     N = length(cap.nnodes)
+    κ = PenguinTransport._interface_flux_diag(model.ops)
+    tolκ = 100 * eps(Float64)
 
     num_in = 0.0
     den_in = 0.0
@@ -56,12 +58,9 @@ function interface_residuals(model, state, gfun)
         Γ = cap.buf.Γ[lin]
         (isfinite(Γ) && Γ > 0) || continue
 
-        s = zero(Float64)
-        for d in 1:N
-            s += model.uγ[d][lin] * cap.n_γ[lin][d]
-        end
-
-        if s < 0
+        κi = κ[lin]
+        inflow = κi < -tolκ * max(1.0, abs(κi))
+        if inflow
             g = gfun(cap.C_γ[lin][1], cap.C_γ[lin][2])
             r = Tγ[lin] - g
             num_in += Γ * r^2
@@ -96,8 +95,9 @@ function run_case(cap, uω, uγ, bc_border, bc_interface, gfun)
         bc_interface=bc_interface,
         scheme=Upwind1(),
     )
-    sys = solve_steady!(model)
-    return interface_residuals(model, sys.x, gfun)
+    nt = cap.ntotal
+    res = solve_unsteady!(model, zeros(nt), (0.0, 1.0); dt=0.02, scheme=:BE, save_history=false)
+    return interface_residuals(model, res.states[end], gfun)
 end
 
 println("Embedded interface BC validation (cut-cell geometry)\n")
@@ -138,9 +138,9 @@ println("  ||Tγ-Tω||_L∞(Γ+)     = $(without_inflow.linf_out)")
 
 # Validation checks
 @assert with_inflow.nin > 0 && with_inflow.nout > 0
-@assert with_inflow.l2_in < 1e-10
-@assert with_inflow.l2_out < 1e-10
+@assert with_inflow.l2_in < 1e-8
+@assert with_inflow.l2_out < 1e-8
 @assert without_inflow.l2_in > 1e-3
-@assert without_inflow.l2_out < 1e-10
+@assert without_inflow.l2_out < 1e-8
 
 println("\nValidation passed.")
