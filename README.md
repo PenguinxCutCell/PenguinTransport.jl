@@ -77,22 +77,21 @@ Any unsupported symbol or numeric `θ` outside `[0,1]` raises `ArgumentError`.
 
 ## Embedded Interface Convention
 
-Fixed geometry uses `s = uγ·nγ`.  
-Moving geometry uses relative normal speed `λ = (uγ - wγ)·nγ`.
+Fixed geometry uses the discrete interface coefficient `κ` extracted from `ops.K` (cellwise embedded-interface transport term on ω rows).  
+Moving geometry uses the discrete relative coefficient `κrel`, assembled from `(uγ - wγ)`.
 
 Mono:
 
-- fixed: if `s < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
-- moving: if `λ < 0` and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
+- if `κ < 0` (or `κrel < 0` moving) and interface inflow data are provided, impose inflow Dirichlet `Tγ = g`,
 - otherwise use continuity closure `Tγ = Tω`.
 
 Two-phase:
 
-- closure is selected locally from phase-wise signs (`s1,s2` fixed; `λ1,λ2` moving),
-- only inflow information is imposed,
+- closure is selected locally from phase-wise discrete signs (`κ1,κ2` fixed; `κ1rel,κ2rel` moving),
+- donor side uses continuity closure, receiver side uses discrete flux continuity,
 - the ill-posed both-inflow local configuration is rejected with `ArgumentError`.
 
-No-flow mode is recovered by setting interface velocity to zero (`uγ = 0`).
+No-flow mode is recovered by setting interface velocity to zero (`uγ = 0`) in fixed geometry, or `uγ = wγ` in moving geometry.
 
 ## Current Limitation (Two-Phase)
 
@@ -111,58 +110,50 @@ At a given interface location, if both phases are locally inflow simultaneously,
 - `examples/moving_two_phase_planar_translation.jl`
 - `examples/moving_two_phase_relative_flux_demo.jl`
 
-## Convergence Matrix (Tmp Environment)
-
-Settings used for all rows:
-
-- 1D periodic setup
-- grids: `n = 33, 65, 129`
-- `dt = 0.4 * h / U`, `U = 0.4`, `Tend = 0.1`
-- error: weighted `L2` on active cells
-- exact sampled at final `cap.C_ω`
-- recomputed on `2026-03-13` with `/tmp/pt_convergence_matrix.jl` (post right-inflow outer-BC fix)
+## Convergence Matrix
 
 ### Mono
 
-| Geometry | Interface | Space | Time | e(33) | e(65) | e(129) | p33→65 | p65→129 |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| fixed | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
-| fixed | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
-| fixed | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
-| fixed | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
-| fixed | with | Upwind1 | BE | 1.018e+42 | 1.025e+01 | 5.191e+00 | 136.189 | 0.982 |
-| fixed | with | Upwind1 | CN | 3.226e+00 | 2.896e+00 | 3.026e+00 | 0.156 | -0.063 |
-| fixed | with | Centered | BE | 9.250e+41 | 9.375e+00 | 4.875e+00 | 136.180 | 0.943 |
-| fixed | with | Centered | CN | 2.948e+00 | 2.649e+00 | 2.842e+00 | 0.155 | -0.102 |
-| moving | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
-| moving | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
-| moving | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
-| moving | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
-| moving | with | Upwind1 | BE | 4.799e-02 | 2.816e-02 | 1.627e-02 | 0.769 | 0.792 |
-| moving | with | Upwind1 | CN | 4.140e-02 | 2.437e-02 | 1.343e-02 | 0.764 | 0.860 |
-| moving | with | Centered | BE | 2.916e-02 | 1.548e-02 | 8.271e-03 | 0.913 | 0.905 |
-| moving | with | Centered | CN | 2.428e-02 | 1.332e-02 | 6.662e-03 | 0.866 | 0.999 |
+| Case | Space | Time | e(33) | e(65) | e(129) | p33→65 | p65→129 |
+|---|---|---:|---:|---:|---:|---:|---:|
+mono_fixed_no_interface|Upwind1|BE|2.352e-02|1.196e-02|6.056e-03|0.976|0.982
+mono_fixed_no_interface|Upwind1|CN|1.720e-02|8.665e-03|4.348e-03|0.989|0.995
+mono_fixed_no_interface|Centered|BE|6.659e-03|3.358e-03|1.722e-03|0.988|0.964
+mono_fixed_no_interface|Centered|CN|1.224e-03|3.069e-04|7.694e-05|1.996|1.996
+mono_fixed_interface|Upwind1|BE|3.846e-02|3.497e-02|3.392e-02|0.137|0.044
+mono_fixed_interface|Upwind1|CN|4.018e-02|3.604e-02|3.452e-02|0.157|0.062
+mono_fixed_interface|Centered|BE|1.603e-02|3.189e-02|6.382e+00|-0.992|-7.645
+mono_fixed_interface|Centered|CN|1.538e-02|2.065e-02|4.509e-01|-0.425|-4.449
+mono_moving_no_interface|Upwind1|BE|2.352e-02|1.196e-02|6.056e-03|0.976|0.982
+mono_moving_no_interface|Upwind1|CN|1.720e-02|8.665e-03|4.348e-03|0.989|0.995
+mono_moving_no_interface|Centered|BE|6.659e-03|3.358e-03|1.722e-03|0.988|0.964
+mono_moving_no_interface|Centered|CN|1.224e-03|3.069e-04|7.694e-05|1.996|1.996
+mono_moving_material_interface|Upwind1|BE|4.060e-02|2.209e-02|1.216e-02|0.878|0.862
+mono_moving_material_interface|Upwind1|CN|3.419e-02|1.795e-02|9.754e-03|0.930|0.880
+mono_moving_material_interface|Centered|BE|2.182e-02|1.093e-02|5.877e-03|0.998|0.895
+mono_moving_material_interface|Centered|CN|1.679e-02|7.870e-03|4.383e-03|1.093|0.844
 
 ### Two-Phase
 
-| Geometry | Interface | Space | Time | e1(33) | e1(65) | e1(129) | p1 33→65 | p1 65→129 | e2(33) | e2(65) | e2(129) | p2 33→65 | p2 65→129 |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| fixed | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
-| fixed | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
-| fixed | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
-| fixed | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
-| fixed | with | Upwind1 | BE | 1.937e+00 | 1.249e+00 | 1.046e+00 | 0.633 | 0.256 | 2.689e-01 | 2.494e-01 | 1.333e+00 | 0.109 | -2.418 |
-| fixed | with | Upwind1 | CN | 8.571e-01 | 8.710e-01 | 8.767e-01 | -0.023 | -0.010 | 2.092e-01 | 2.180e-01 | 1.036e+00 | -0.059 | -2.248 |
-| fixed | with | Centered | BE | 1.652e+00 | 1.092e+00 | 9.511e-01 | 0.597 | 0.200 | 2.584e-01 | 2.371e-01 | 1.245e+00 | 0.124 | -2.393 |
-| fixed | with | Centered | CN | 7.402e-01 | 7.583e-01 | 7.965e-01 | -0.035 | -0.071 | 2.049e-01 | 2.068e-01 | 9.675e-01 | -0.013 | -2.226 |
-| moving | without | Upwind1 | BE | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 | 2.352e-02 | 1.196e-02 | 6.056e-03 | 0.976 | 0.982 |
-| moving | without | Upwind1 | CN | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 | 1.720e-02 | 8.665e-03 | 4.348e-03 | 0.989 | 0.995 |
-| moving | without | Centered | BE | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 | 6.659e-03 | 3.358e-03 | 1.722e-03 | 0.988 | 0.964 |
-| moving | without | Centered | CN | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 | 1.224e-03 | 3.069e-04 | 7.694e-05 | 1.996 | 1.996 |
-| moving | with | Upwind1 | BE | 4.799e-02 | 2.816e-02 | 1.627e-02 | 0.769 | 0.792 | 3.214e-02 | 1.903e-02 | 1.100e-02 | 0.756 | 0.791 |
-| moving | with | Upwind1 | CN | 4.140e-02 | 2.437e-02 | 1.343e-02 | 0.764 | 0.860 | 2.697e-02 | 1.564e-02 | 8.935e-03 | 0.786 | 0.808 |
-| moving | with | Centered | BE | 2.916e-02 | 1.548e-02 | 8.271e-03 | 0.913 | 0.905 | 1.779e-02 | 9.742e-03 | 5.180e-03 | 0.869 | 0.911 |
-| moving | with | Centered | CN | 2.428e-02 | 1.332e-02 | 6.662e-03 | 0.866 | 0.999 | 1.415e-02 | 7.693e-03 | 4.074e-03 | 0.879 | 0.917 |
+| Case | Space | Time | e1(33) | e1(65) | e1(129) | p1 33→65 | p1 65→129 | e2(33) | e2(65) | e2(129) | p2 33→65 | p2 65→129 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+two_fixed_no_interface|Upwind1|BE|2.352e-02|1.196e-02|6.056e-03|0.976|0.982|2.352e-02|1.196e-02|6.056e-03|0.976|0.982
+two_fixed_no_interface|Upwind1|CN|1.720e-02|8.665e-03|4.348e-03|0.989|0.995|1.720e-02|8.665e-03|4.348e-03|0.989|0.995
+two_fixed_no_interface|Centered|BE|6.659e-03|3.358e-03|1.722e-03|0.988|0.964|6.659e-03|3.358e-03|1.722e-03|0.988|0.964
+two_fixed_no_interface|Centered|CN|1.224e-03|3.069e-04|7.694e-05|1.996|1.996|1.224e-03|3.069e-04|7.694e-05|1.996|1.996
+two_fixed_interface_same_scalar|Upwind1|BE|2.626e-02|1.315e-02|5.250e-03|0.998|1.324|2.317e-02|1.191e-02|6.751e-03|0.960|0.819
+two_fixed_interface_same_scalar|Upwind1|CN|4.349e-02|2.580e-02|1.249e-02|0.753|1.046|2.854e-02|1.403e-02|7.240e-03|1.024|0.955
+two_fixed_interface_same_scalar|Centered|BE|6.737e-02|9.666e-02|1.097e-01|-0.521|-0.182|6.352e-02|9.111e-02|1.116e-01|-0.520|-0.293
+two_fixed_interface_same_scalar|Centered|CN|7.339e-02|1.005e-01|1.145e-01|-0.454|-0.188|5.872e-02|9.215e-02|1.175e-01|-0.650|-0.350
+two_moving_no_interface|Upwind1|BE|2.352e-02|1.196e-02|6.056e-03|0.976|0.982|2.352e-02|1.196e-02|6.056e-03|0.976|0.982
+two_moving_no_interface|Upwind1|CN|1.720e-02|8.665e-03|4.348e-03|0.989|0.995|1.720e-02|8.665e-03|4.348e-03|0.989|0.995
+two_moving_no_interface|Centered|BE|6.659e-03|3.358e-03|1.722e-03|0.988|0.964|6.659e-03|3.358e-03|1.722e-03|0.988|0.964
+two_moving_no_interface|Centered|CN|1.224e-03|3.069e-04|7.694e-05|1.996|1.996|1.224e-03|3.069e-04|7.694e-05|1.996|1.996
+two_moving_material_interface_same_scalar|Upwind1|BE|4.060e-02|2.209e-02|1.216e-02|0.878|0.862|2.262e-02|1.306e-02|7.602e-03|0.792|0.781
+two_moving_material_interface_same_scalar|Upwind1|CN|3.419e-02|1.795e-02|9.754e-03|0.930|0.880|1.793e-02|1.029e-02|5.947e-03|0.801|0.791
+two_moving_material_interface_same_scalar|Centered|BE|2.182e-02|1.093e-02|5.877e-03|0.998|0.895|1.023e-02|6.178e-03|3.699e-03|0.728|0.740
+two_moving_material_interface_same_scalar|Centered|CN|1.679e-02|7.870e-03|4.383e-03|1.093|0.844|8.282e-03|4.701e-03|2.763e-03|0.817|0.767
+two_moving_material_interface_same_scalar|Centered|CN|1.679e-02|7.870e-03|4.383e-03|1.093|0.844|8.282e-03|4.701e-03|2.763e-03|0.817|0.767
 
 ## Local Docs Build
 

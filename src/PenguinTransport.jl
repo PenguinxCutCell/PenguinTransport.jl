@@ -90,8 +90,9 @@ end
 
 Moving-geometry monophasic advection transport model assembled from space-time slabs.
 
-Unknown ordering is `(ω, γ)` and interface inflow/outflow decisions use
-relative interface speed `(uγ - wγ)·nγ`.
+Unknown ordering is `(ω, γ)` and interface inflow/outflow decisions use the
+same discrete interface coefficient as the ω-row embedded transport term,
+assembled from the relative interface velocity `(uγ - wγ)`.
 """
 mutable struct MovingTransportModelMono{N,T,VTω,VTγ,WTγ,ST,BCT,ICT,LT,SCT,BT}
 	grid::CartesianGrid{N,T}
@@ -118,7 +119,8 @@ end
 Moving-geometry two-phase advection transport model assembled from space-time slabs.
 
 Unknown ordering is `(ω1, γ1, ω2, γ2)` and local interface inflow/outflow
-decisions use relative interface speeds `(u1γ - wγ)·n1γ` and `(u2γ - wγ)·n2γ`.
+decisions use the same discrete interface coefficients as the ω-row embedded
+transport terms, assembled from relative interface velocities.
 """
 mutable struct MovingTransportModelTwoPhase{
 	N,T,
@@ -929,6 +931,9 @@ function _validate_two_phase_layout(cap1::AssembledCapacity, cap2::AssembledCapa
 	return nothing
 end
 
+# Embedded interface advection is split on ω rows as κω*Tω + κγ*Tγ.
+# γ rows are closure/transmission equations only (not a duplicate flux balance),
+# and inflow/outflow switching must use the same discrete κ coefficients.
 function _interface_closure(
 	model::TransportModelMono{N,T},
 	κ::AbstractVector{T},
@@ -1347,7 +1352,10 @@ function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelT
 	conv_bulk1 = reduce(+, ops1.C)
 	κ1 = _interface_flux_diag(ops1)
 	κ1ω, κ1γ = _split_interface_flux(κ1, model.scheme)
-	A11 = conv_bulk1 + spdiagm(0 => κ1ω)
+	# Fixed two-phase uses the static cut geometry on each phase while C is built on
+	# phase-cell values; remove the raw κ contribution from the ω diagonal so the
+	# interface transport term acts on the trace jump consistently across phases.
+	A11 = conv_bulk1 + spdiagm(0 => (κ1ω .- κ1))
 	A12 = spdiagm(0 => κ1γ)
 	f1 = _source_values(model.cap1, model.source1, t)
 	b1 = model.cap1.V * f1
@@ -1355,7 +1363,7 @@ function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelT
 	conv_bulk2 = reduce(+, ops2.C)
 	κ2 = _interface_flux_diag(ops2)
 	κ2ω, κ2γ = _split_interface_flux(κ2, model.scheme)
-	A33 = conv_bulk2 + spdiagm(0 => κ2ω)
+	A33 = conv_bulk2 + spdiagm(0 => (κ2ω .- κ2))
 	A34 = spdiagm(0 => κ2γ)
 	f2 = _source_values(model.cap2, model.source2, t)
 	b3 = model.cap2.V * f2
@@ -1631,7 +1639,8 @@ end
     assemble_unsteady_mono_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)
 
 Assemble one moving-geometry monophasic theta-method step on slab `[t, t+dt]`.
-Embedded-interface inflow/outflow switching uses relative speed `(uγ - wγ)·nγ`.
+Embedded-interface inflow/outflow switching uses the discrete relative
+interface coefficient extracted from the assembled transport operator.
 """
 function assemble_unsteady_mono_moving!(
 	sys::LinearSystem{T},
@@ -1729,7 +1738,8 @@ end
     assemble_unsteady_two_phase_moving!(sys, model, uⁿ, t, dt, scheme_or_theta)
 
 Assemble one moving-geometry two-phase theta-method step on slab `[t, t+dt]`.
-Embedded-interface inflow/outflow switching uses relative speeds against `wγ`.
+Embedded-interface inflow/outflow switching uses discrete relative interface
+coefficients extracted from the assembled transport operators.
 """
 function assemble_unsteady_two_phase_moving!(
 	sys::LinearSystem{T},
@@ -1770,14 +1780,14 @@ function assemble_unsteady_two_phase_moving!(
 	conv_bulk1 = reduce(+, ops1.C)
 	κ1rel = _interface_flux_diag(ops1)
 	κ1ω, κ1γ = _split_interface_flux(κ1rel, model.scheme)
-	Adv11 = conv_bulk1 + spdiagm(0 => κ1ω)
+	Adv11 = conv_bulk1 + spdiagm(0 => (κ1ω .- κ1rel))
 	Adv12 = spdiagm(0 => κ1γ)
 	f1 = _source_values(cap1, model.source1, tθ)
 
 	conv_bulk2 = reduce(+, ops2.C)
 	κ2rel = _interface_flux_diag(ops2)
 	κ2ω, κ2γ = _split_interface_flux(κ2rel, model.scheme)
-	Adv33 = conv_bulk2 + spdiagm(0 => κ2ω)
+	Adv33 = conv_bulk2 + spdiagm(0 => (κ2ω .- κ2rel))
 	Adv34 = spdiagm(0 => κ2γ)
 	f2 = _source_values(cap2, model.source2, tθ)
 

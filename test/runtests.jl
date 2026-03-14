@@ -246,20 +246,21 @@ end
         zω = (zeros(nt), zeros(nt))
         g = 2.5
 
-        # Sign-varying interface velocity (uγ·nγ changes sign around the circle).
+        # Sign-varying discrete interface coefficient κ around the circle.
         uγ = (ones(nt), zeros(nt))
         model = TransportModelMono(cap, zω, uγ; bc_interface=Inflow(g), scheme=Centered())
         sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
         assemble_steady_mono!(sys, model, 0.0)
+        κ = interface_flux_diag(model.ops)
 
         nin = 0
         nout = 0
         for i in 1:nt
             Γ = cap.buf.Γ[i]
             (isfinite(Γ) && Γ > 0) || continue
-            s = uγ[1][i] * cap.n_γ[i][1] + uγ[2][i] * cap.n_γ[i][2]
+            κi = κ[i]
             r = lay.γ[i]
-            if s < 0
+            if coeff_inflow(κi, abs(κi))
                 nin += 1
                 @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-12
                 @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
@@ -898,15 +899,16 @@ end
     model = TransportModelMono(cap, zω, uγ; bc_interface=Inflow(g), scheme=Centered())
     sys = LinearSystem(spzeros(Float64, 2 * nt, 2 * nt), zeros(Float64, 2 * nt))
     assemble_steady_mono!(sys, model, 0.0)
+    κ = interface_flux_diag(model.ops)
 
     n_in = 0
     n_out = 0
     for i in 1:nt
         Γ = cap.buf.Γ[i]
         (isfinite(Γ) && Γ > 0) || continue
-        s = uγ[1][i] * cap.n_γ[i][1] + uγ[2][i] * cap.n_γ[i][2]
+        κi = κ[i]
         r = lay.γ[i]
-        if s < 0
+        if coeff_inflow(κi, abs(κi))
             n_in += 1
             @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-12
             @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
@@ -916,6 +918,56 @@ end
             @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-12
             @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-12
             @test sys.b[r] ≈ 0.0 atol=1e-12
+        end
+    end
+
+    @test n_in > 0
+    @test n_out > 0
+end
+
+@testset "Embedded interface moving γ-closure uses discrete relative coefficient" begin
+    grid = CartesianGrid((0.0, 0.0), (1.0, 1.0), (21, 21))
+    nt = prod(grid.n)
+    body(x, y, t) = sqrt((x - 0.5)^2 + (y - 0.5)^2) - 0.22
+
+    z = zeros(nt)
+    g = 2.5
+    model = MovingTransportModelMono(
+        grid, body, (z, z), (ones(nt), z);
+        wγ=(0.3 .* ones(nt), z),
+        source=0.0,
+        bc_border=BorderConditions(; left=Outflow(), right=Outflow(), bottom=Outflow(), top=Outflow()),
+        bc_interface=Inflow(g),
+        scheme=Centered(),
+        geom_method=:vofijul,
+    )
+    lay = model.layout.offsets
+    sys = LinearSystem(spzeros(Float64, last(lay.γ), last(lay.γ)), zeros(Float64, last(lay.γ)))
+    assemble_unsteady_mono_moving!(sys, model, zeros(nt), 0.0, 0.05, :BE)
+
+    cap = model.cap_slab
+    @test !(cap === nothing)
+    ops = model.ops_slab
+    @test !(ops === nothing)
+    κrel = interface_flux_diag(ops)
+
+    n_in = 0
+    n_out = 0
+    for i in 1:nt
+        Γ = cap.buf.Γ[i]
+        (isfinite(Γ) && Γ > 0) || continue
+        κi = κrel[i]
+        r = lay.γ[i]
+        if coeff_inflow(κi, abs(κi))
+            n_in += 1
+            @test sys.A[r, lay.ω[i]] ≈ 0.0 atol=1e-10
+            @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-10
+            @test sys.b[r] ≈ Γ * g atol=1e-10
+        else
+            n_out += 1
+            @test sys.A[r, lay.ω[i]] ≈ -Γ atol=1e-10
+            @test sys.A[r, lay.γ[i]] ≈ Γ atol=1e-10
+            @test sys.b[r] ≈ 0.0 atol=1e-10
         end
     end
 
@@ -1580,4 +1632,155 @@ end
 
     # Error should decrease when we refine
     @test errs[2] < errs[1]
+end
+
+@testset "Convergence matrix medium-grid regressions" begin
+    function safe_sine(points, c, t)
+        out = zeros(length(points))
+        for i in eachindex(points)
+            x = points[i][1]
+            out[i] = isfinite(x) ? sin(2π * (x - c * t)) : 0.0
+        end
+        return out
+    end
+
+    c = 0.4
+    tend = 0.1
+    n = 65
+    grid = (range(0.0, 1.0; length=n),)
+    h = minimum(diff(collect(grid[1])))
+    dt = 0.4 * h / c
+    bc = BorderConditions(; left=Periodic(), right=Periodic())
+
+    # 1) mono fixed no interface: Centered+CN should be much more accurate than Upwind1+BE
+    cap_full = assembled_capacity(full_moments(grid); bc=0.0)
+    nt_full = cap_full.ntotal
+    vel_full = (fill(c, nt_full),)
+    u0_full = safe_sine(cap_full.C_ω, c, 0.0)
+    exact_full = safe_sine(cap_full.C_ω, c, tend)
+
+    m_up = TransportModelMono(cap_full, vel_full, vel_full; source=0.0, bc_border=bc, bc_interface=nothing, scheme=Upwind1())
+    r_up = solve_unsteady!(m_up, u0_full, (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+    err_up = _l2_weighted_error(cap_full, omega_view(m_up, r_up.states[end]), exact_full)
+
+    m_cn = TransportModelMono(cap_full, vel_full, vel_full; source=0.0, bc_border=bc, bc_interface=nothing, scheme=Centered())
+    r_cn = solve_unsteady!(m_cn, u0_full, (0.0, tend); dt=dt, scheme=:CN, save_history=false)
+    err_cn = _l2_weighted_error(cap_full, omega_view(m_cn, r_cn.states[end]), exact_full)
+
+    @test err_cn < 0.5 * err_up
+
+    # 2) mono fixed interface: exact inflow trace on interface should stay bounded
+    x0 = 0.5
+    rad = 0.18
+    body(x) = abs(x - x0) - rad
+    cap_if = assembled_capacity(geometric_moments(body, grid, Float64, nan; method=:vofijul); bc=0.0)
+    nt_if = cap_if.ntotal
+    vel_if = (fill(c, nt_if),)
+    gΓ = (x, t) -> sin(2π * (x - c * t))
+    m_if = TransportModelMono(cap_if, vel_if, vel_if;
+        source=0.0,
+        bc_border=bc,
+        bc_interface=Inflow(gΓ),
+        scheme=Upwind1(),
+    )
+    u0_if = safe_sine(cap_if.C_ω, c, 0.0)
+    exact_if = safe_sine(cap_if.C_ω, c, tend)
+    r_if = solve_unsteady!(m_if, u0_if, (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+    ω_if = omega_view(m_if, r_if.states[end])
+    err_if = _l2_weighted_error(cap_if, ω_if, exact_if)
+    @test all(isfinite, ω_if)
+    @test isfinite(err_if)
+    @test err_if < 1.0
+
+    # 3) fixed two-phase interface same scalar: bounded and non-explosive
+    cap1 = assembled_capacity(geometric_moments(body, grid, Float64, nan; method=:vofijul); bc=0.0)
+    cap2 = assembled_capacity(geometric_moments(x -> -body(x), grid, Float64, nan; method=:vofijul); bc=0.0)
+    nt2 = cap1.ntotal
+    vel2 = (fill(c, nt2),)
+    m2 = TransportModelTwoPhase(
+        cap1, cap2,
+        vel2, vel2,
+        vel2, vel2;
+        source1=0.0,
+        source2=0.0,
+        bc_border1=bc,
+        bc_border2=bc,
+        scheme=Upwind1(),
+    )
+    u01 = safe_sine(cap1.C_ω, c, 0.0)
+    u02 = safe_sine(cap2.C_ω, c, 0.0)
+    ex1 = safe_sine(cap1.C_ω, c, tend)
+    ex2 = safe_sine(cap2.C_ω, c, tend)
+    r2 = solve_unsteady!(m2, (u01, u02), (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+    lay2 = m2.layout
+    ω1 = r2.states[end][lay2.ω1]
+    ω2 = r2.states[end][lay2.ω2]
+    e1 = _l2_weighted_error(cap1, ω1, ex1)
+    e2 = _l2_weighted_error(cap2, ω2, ex2)
+    @test all(isfinite, ω1)
+    @test all(isfinite, ω2)
+    @test isfinite(e1) && e1 < 1.0
+    @test isfinite(e2) && e2 < 1.0
+    @test maximum(abs.(ω1)) < 10.0
+    @test maximum(abs.(ω2)) < 10.0
+
+    # 4) moving material-interface mono and two-phase: finite and stable
+    grid_m = CartesianGrid((0.0,), (1.0,), (n,))
+    ntm = prod(grid_m.n)
+    velm = (fill(c, ntm),)
+    body_m(x, t) = abs(x - (x0 + c * t)) - rad
+
+    cap0_mono = assembled_capacity(geometric_moments(x -> abs(x - x0) - rad, grid, Float64, nan; method=:vofijul); bc=0.0)
+    u0m = safe_sine(cap0_mono.C_ω, c, 0.0)
+    mm = MovingTransportModelMono(
+        grid_m, body_m, velm, velm;
+        wγ=velm,
+        source=0.0,
+        bc_border=bc,
+        bc_interface=nothing,
+        scheme=Upwind1(),
+        geom_method=:vofijul,
+    )
+    rm = solve_unsteady_moving!(mm, u0m, (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+    capm = mm.cap_slab
+    @test !(capm === nothing)
+    ωm = rm.states[end][mm.layout.offsets.ω]
+    ex_mono = safe_sine(capm.C_ω, c, tend)
+    em = _l2_weighted_error(capm, ωm, ex_mono)
+    @test all(isfinite, ωm)
+    @test isfinite(em) && em < 1.0
+
+    cap0_1 = assembled_capacity(geometric_moments(x -> abs(x - x0) - rad, grid, Float64, nan; method=:vofijul); bc=0.0)
+    cap0_2 = assembled_capacity(geometric_moments(x -> -(abs(x - x0) - rad), grid, Float64, nan; method=:vofijul); bc=0.0)
+    u0m1 = safe_sine(cap0_1.C_ω, c, 0.0)
+    u0m2 = safe_sine(cap0_2.C_ω, c, 0.0)
+    mt = MovingTransportModelTwoPhase(
+        grid_m, body_m,
+        velm, velm,
+        velm, velm;
+        body2=nothing,
+        wγ=velm,
+        source1=0.0,
+        source2=0.0,
+        bc_border1=bc,
+        bc_border2=bc,
+        scheme=Upwind1(),
+        geom_method=:vofijul,
+    )
+    rt = solve_unsteady_moving!(mt, (u0m1, u0m2), (0.0, tend); dt=dt, scheme=:BE, save_history=false)
+    cap1m = mt.cap1_slab
+    cap2m = mt.cap2_slab
+    @test !(cap1m === nothing)
+    @test !(cap2m === nothing)
+    laym = mt.layout
+    ω1m = rt.states[end][laym.ω1]
+    ω2m = rt.states[end][laym.ω2]
+    exm1 = safe_sine(cap1m.C_ω, c, tend)
+    exm2 = safe_sine(cap2m.C_ω, c, tend)
+    e1m = _l2_weighted_error(cap1m, ω1m, exm1)
+    e2m = _l2_weighted_error(cap2m, ω2m, exm2)
+    @test all(isfinite, ω1m)
+    @test all(isfinite, ω2m)
+    @test isfinite(e1m) && e1m < 1.0
+    @test isfinite(e2m) && e2m < 1.0
 end
