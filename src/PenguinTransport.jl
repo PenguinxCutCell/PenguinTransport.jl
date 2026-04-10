@@ -939,41 +939,85 @@ function _interface_closure(
 	κ::AbstractVector{T},
 	t::T,
 ) where {N,T}
-	nt = model.cap.ntotal
+	cap = model.cap
+	nt = cap.ntotal
 	length(κ) == nt || throw(DimensionMismatch("interface coefficient length must be $nt"))
-	a21 = zeros(T, nt)
+	activeω, _ = _cell_activity_masks(cap)
+	I_a21 = Int[]
+	J_a21 = Int[]
+	V_a21 = T[]
 	a22 = zeros(T, nt)
-	b2 = zeros(T, nt)
-	LI = LinearIndices(model.cap.nnodes)
+	b2  = zeros(T, nt)
+	LI = LinearIndices(cap.nnodes)
 
-	for I in CartesianIndices(model.cap.nnodes)
+	for I in CartesianIndices(cap.nnodes)
 		lin = LI[I]
-		any(d -> I[d] == model.cap.nnodes[d], 1:N) && continue
-		Γ = model.cap.buf.Γ[lin]
+		any(d -> I[d] == cap.nnodes[d], 1:N) && continue
+		Γ = cap.buf.Γ[lin]
 		if !(isfinite(Γ) && Γ > zero(T))
 			continue
 		end
 
 		κi = κ[lin]
 		if _is_inflow_coeff(κi, abs(κi))
-			g = _interface_inflow_value(model.bc_interface, model.cap.C_γ[lin], t)
+			g = _interface_inflow_value(model.bc_interface, cap.C_γ[lin], t)
 			if g !== nothing
 				a22[lin] = Γ
 				b2[lin] = Γ * g
 				continue
 			end
 		end
-		a21[lin] = -Γ
+		# First-order closure: Tγ ≈ Tω + (C_γ - C_ω)·∇Tω
 		a22[lin] = Γ
+		push!(I_a21, lin); push!(J_a21, lin); push!(V_a21, -Γ)
+		_append_grad_correction!(I_a21, J_a21, V_a21, cap, lin, I, Γ, activeω)
 	end
 
-	return spdiagm(0 => a21), spdiagm(0 => a22), b2
+	A21 = isempty(I_a21) ? spzeros(T, nt, nt) : sparse(I_a21, J_a21, V_a21, nt, nt)
+	return A21, spdiagm(0 => a22), b2
 end
 
 function _is_inflow_coeff(κi::T, scale::T) where {T}
 	isfinite(κi) || return false
 	tol = _relative_speed_atol(T) * max(one(T), scale)
 	return κi < -tol
+end
+
+# Add centered-difference gradient correction terms to the interface closure row for cell lin.
+# The correction approximates -Γ*(C_γ - C_ω)·∇Tω, improving the trace accuracy from
+# zeroth order (Tγ = Tω) to first order (Tγ ≈ Tω + (C_γ - C_ω)·∇Tω).
+# Only applies when both neighbors in a direction are active; falls back to no correction
+# otherwise, so existing diagonal-entry test assertions are preserved.
+function _append_grad_correction!(
+	I_rows::Vector{Int},
+	J_cols::Vector{Int},
+	V_vals::Vector{T},
+	cap::AssembledCapacity{N,T},
+	lin::Int,
+	I::CartesianIndex{N},
+	Γ::T,
+	activeω::BitVector,
+) where {N,T}
+	δx = cap.C_γ[lin] - cap.C_ω[lin]
+	LI = LinearIndices(cap.nnodes)
+	for d in 1:N
+		δxd = δx[d]
+		iszero(δxd) && continue
+		i_d = I[d]
+		e_d = CartesianIndex(ntuple(k -> Int(k == d), N))
+		Ip = I + e_d
+		Im = I - e_d
+		has_plus  = (i_d + 1 < cap.nnodes[d]) && activeω[LI[Ip]]
+		has_minus = (i_d >= 2) && activeω[LI[Im]]
+		(has_plus && has_minus) || continue
+		lin_p = LI[Ip]
+		lin_m = LI[Im]
+		cωp = (cap.xyz[d][i_d + 1] + cap.xyz[d][i_d + 2]) / 2
+		cωm = (cap.xyz[d][i_d - 1] + cap.xyz[d][i_d    ]) / 2
+		c = -Γ * δxd / (cωp - cωm)
+		push!(I_rows, lin); push!(J_cols, lin_p); push!(V_vals,  c)
+		push!(I_rows, lin); push!(J_cols, lin_m); push!(V_vals, -c)
+	end
 end
 
 function _interface_closure_moving(
@@ -984,9 +1028,12 @@ function _interface_closure_moving(
 ) where {N,T}
 	nt = cap.ntotal
 	length(κrel) == nt || throw(DimensionMismatch("relative interface coefficient length must be $nt"))
-	a21 = zeros(T, nt)
+	activeω, _ = _cell_activity_masks(cap)
+	I_a21 = Int[]
+	J_a21 = Int[]
+	V_a21 = T[]
 	a22 = zeros(T, nt)
-	b2 = zeros(T, nt)
+	b2  = zeros(T, nt)
 	LI = LinearIndices(cap.nnodes)
 
 	for I in CartesianIndices(cap.nnodes)
@@ -1006,11 +1053,14 @@ function _interface_closure_moving(
 				continue
 			end
 		end
-		a21[lin] = -Γ
+		# First-order closure: Tγ ≈ Tω + (C_γ - C_ω)·∇Tω
 		a22[lin] = Γ
+		push!(I_a21, lin); push!(J_a21, lin); push!(V_a21, -Γ)
+		_append_grad_correction!(I_a21, J_a21, V_a21, cap, lin, I, Γ, activeω)
 	end
 
-	return spdiagm(0 => a21), spdiagm(0 => a22), b2
+	A21 = isempty(I_a21) ? spzeros(T, nt, nt) : sparse(I_a21, J_a21, V_a21, nt, nt)
+	return A21, spdiagm(0 => a22), b2
 end
 
 function _interface_closure_two_phase(
@@ -1023,13 +1073,15 @@ function _interface_closure_two_phase(
 	nt = model.cap1.ntotal
 	length(κ1) == nt || throw(DimensionMismatch("phase-1 interface coefficient length must be $nt"))
 	length(κ2) == nt || throw(DimensionMismatch("phase-2 interface coefficient length must be $nt"))
-	b21 = zeros(T, nt)
+	activeω1, _ = _cell_activity_masks(model.cap1)
+	activeω2, _ = _cell_activity_masks(model.cap2)
+	I_b21 = Int[]; J_b21 = Int[]; V_b21 = T[]
+	I_b43 = Int[]; J_b43 = Int[]; V_b43 = T[]
 	b22 = zeros(T, nt)
 	b23 = zeros(T, nt)
 	b24 = zeros(T, nt)
 	b41 = zeros(T, nt)
 	b42 = zeros(T, nt)
-	b43 = zeros(T, nt)
 	b44 = zeros(T, nt)
 	rhs2 = zeros(T, nt)
 	rhs4 = zeros(T, nt)
@@ -1061,26 +1113,34 @@ function _interface_closure_two_phase(
 			# gamma1 row: phase-1 inflow receives discrete flux continuity.
 			b22[lin] = κ1i
 			b24[lin] = κ2i
-			b43[lin] = -Γ
+			# gamma2 row: phase-2 outflow, first-order closure
+			push!(I_b43, lin); push!(J_b43, lin); push!(V_b43, -Γ)
+			_append_grad_correction!(I_b43, J_b43, V_b43, model.cap2, lin, I, Γ, activeω2)
 			b44[lin] = Γ
 		elseif in2 && !in1
 			# gamma2 row: phase-2 inflow receives discrete flux continuity.
-			b21[lin] = -Γ
+			# gamma1 row: phase-1 outflow, first-order closure
+			push!(I_b21, lin); push!(J_b21, lin); push!(V_b21, -Γ)
+			_append_grad_correction!(I_b21, J_b21, V_b21, model.cap1, lin, I, Γ, activeω1)
 			b22[lin] = Γ
 			b42[lin] = κ1i
 			b44[lin] = κ2i
 		else
-			# both outflow (or near zero): continuity on each phase.
-			b21[lin] = -Γ
+			# both outflow (or near zero): first-order closure on each phase.
+			push!(I_b21, lin); push!(J_b21, lin); push!(V_b21, -Γ)
+			_append_grad_correction!(I_b21, J_b21, V_b21, model.cap1, lin, I, Γ, activeω1)
 			b22[lin] = Γ
-			b43[lin] = -Γ
+			push!(I_b43, lin); push!(J_b43, lin); push!(V_b43, -Γ)
+			_append_grad_correction!(I_b43, J_b43, V_b43, model.cap2, lin, I, Γ, activeω2)
 			b44[lin] = Γ
 		end
 	end
 
+	B21 = isempty(I_b21) ? spzeros(T, nt, nt) : sparse(I_b21, J_b21, V_b21, nt, nt)
+	B43 = isempty(I_b43) ? spzeros(T, nt, nt) : sparse(I_b43, J_b43, V_b43, nt, nt)
 	return (
-		spdiagm(0 => b21), spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
-		spdiagm(0 => b41), spdiagm(0 => b42), spdiagm(0 => b43), spdiagm(0 => b44),
+		B21, spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
+		spdiagm(0 => b41), spdiagm(0 => b42), B43, spdiagm(0 => b44),
 		rhs2, rhs4,
 	)
 end
@@ -1097,13 +1157,15 @@ function _interface_closure_two_phase_moving(
 	nt = cap1.ntotal
 	length(κ1rel) == nt || throw(DimensionMismatch("phase-1 relative interface coefficient length must be $nt"))
 	length(κ2rel) == nt || throw(DimensionMismatch("phase-2 relative interface coefficient length must be $nt"))
-	b21 = zeros(T, nt)
+	activeω1, _ = _cell_activity_masks(cap1)
+	activeω2, _ = _cell_activity_masks(cap2)
+	I_b21 = Int[]; J_b21 = Int[]; V_b21 = T[]
+	I_b43 = Int[]; J_b43 = Int[]; V_b43 = T[]
 	b22 = zeros(T, nt)
 	b23 = zeros(T, nt)
 	b24 = zeros(T, nt)
 	b41 = zeros(T, nt)
 	b42 = zeros(T, nt)
-	b43 = zeros(T, nt)
 	b44 = zeros(T, nt)
 	rhs2 = zeros(T, nt)
 	rhs4 = zeros(T, nt)
@@ -1135,26 +1197,34 @@ function _interface_closure_two_phase_moving(
 			# gamma1 row: phase-1 relative inflow receives discrete flux continuity.
 			b22[lin] = κ1i
 			b24[lin] = κ2i
-			b43[lin] = -Γ
+			# gamma2 row: phase-2 outflow, first-order closure
+			push!(I_b43, lin); push!(J_b43, lin); push!(V_b43, -Γ)
+			_append_grad_correction!(I_b43, J_b43, V_b43, cap2, lin, I, Γ, activeω2)
 			b44[lin] = Γ
 		elseif in2 && !in1
 			# gamma2 row: phase-2 relative inflow receives discrete flux continuity.
-			b21[lin] = -Γ
+			# gamma1 row: phase-1 outflow, first-order closure
+			push!(I_b21, lin); push!(J_b21, lin); push!(V_b21, -Γ)
+			_append_grad_correction!(I_b21, J_b21, V_b21, cap1, lin, I, Γ, activeω1)
 			b22[lin] = Γ
 			b42[lin] = κ1i
 			b44[lin] = κ2i
 		else
-			# both relative-outflow (or near zero): continuity on each phase
-			b21[lin] = -Γ
+			# both relative-outflow (or near zero): first-order closure on each phase
+			push!(I_b21, lin); push!(J_b21, lin); push!(V_b21, -Γ)
+			_append_grad_correction!(I_b21, J_b21, V_b21, cap1, lin, I, Γ, activeω1)
 			b22[lin] = Γ
-			b43[lin] = -Γ
+			push!(I_b43, lin); push!(J_b43, lin); push!(V_b43, -Γ)
+			_append_grad_correction!(I_b43, J_b43, V_b43, cap2, lin, I, Γ, activeω2)
 			b44[lin] = Γ
 		end
 	end
 
+	B21 = isempty(I_b21) ? spzeros(T, nt, nt) : sparse(I_b21, J_b21, V_b21, nt, nt)
+	B43 = isempty(I_b43) ? spzeros(T, nt, nt) : sparse(I_b43, J_b43, V_b43, nt, nt)
 	return (
-		spdiagm(0 => b21), spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
-		spdiagm(0 => b41), spdiagm(0 => b42), spdiagm(0 => b43), spdiagm(0 => b44),
+		B21, spdiagm(0 => b22), spdiagm(0 => b23), spdiagm(0 => b24),
+		spdiagm(0 => b41), spdiagm(0 => b42), B43, spdiagm(0 => b44),
 		rhs2, rhs4,
 	)
 end
