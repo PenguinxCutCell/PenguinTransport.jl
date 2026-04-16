@@ -520,30 +520,30 @@ function _advection_ops_moving(
 	periodic::NTuple{N,Bool},
 	scheme::AdvectionScheme,
 ) where {N,T}
-	nt = cap.ntotal
-	uγflat = Vector{T}(undef, N * nt)
-	@inbounds for d in 1:N
-		copyto!(uγflat, (d - 1) * nt + 1, uγ[d], 1, nt)
-	end
 	G, H, _, nnodes, D_m, D_p, S_m, _ = CartesianOperators.build_GHW(cap; periodic=periodic)
+	# Bulk operator C[d]: advective-form ½·diag(A·u)·(D_m+D_p).
+	# This formula has exactly zero diagonal (since (D_m+D_p)_{ii}=0), ensuring
+	# unconditional CN stability even for near-zero-volume cut cells.
+	# Upwind: per-face upwind fluxes using cut face areas.
 	C = ntuple(d -> begin
+		a = cap.buf.A[d] .* uω[d]
 		if scheme isa Upwind1
-			a = cap.buf.A[d] .* uω[d]
 			a⁺ = max.(a, zero(T))
 			a⁻ = min.(a, zero(T))
 			return spdiagm(0 => a⁺) * D_m[d] + spdiagm(0 => a⁻) * D_p[d]
 		elseif scheme isa Centered
-			flux = S_m[d] * (cap.buf.A[d] .* uω[d])
-			C_cons = D_p[d] * spdiagm(0 => flux) * S_m[d]
-			C_adv = spdiagm(0 => uω[d]) * (convert(T, 0.5) * (D_m[d] + D_p[d]))
-			return convert(T, 0.5) * (C_cons + C_adv)
+			# ½·diag(A·u)·(D_m+D_p): zero diagonal → CN-stable on degenerate cut cells.
+			return convert(T, 0.5) * (spdiagm(0 => a) * D_m[d] + spdiagm(0 => a) * D_p[d])
 		end
 		throw(ArgumentError("unknown advection scheme $(typeof(scheme))"))
 	end, N)
+	# Interface flux K[d]: GCL-consistent diagonal operator.
+	# κ_d = -(D_p[d]*A[d]) .* uγ[d] uses the discrete identity -(D_p*A[d]) = n_Γd*Γ
+	# so that κ = Γ*(n_Γ·uγ) = net interface outflow area times normal velocity.
+	# For tangential flow (n_Γ·uγ=0) or no-interface (A=const): κ=0 automatically.
 	K = ntuple(d -> begin
-		wd = zeros(T, N * nt)
-		copyto!(wd, (d - 1) * nt + 1, uγ[d], 1, nt)
-		H' * spdiagm(0 => wd) * H
+		κ_d = -(D_p[d] * cap.buf.A[d]) .* uγ[d]
+		spdiagm(0 => κ_d)
 	end, N)
 	return AdvectionOps{N,T}(C, K, H, cap.V, nnodes)
 end
