@@ -521,9 +521,8 @@ function _advection_ops_moving(
 	scheme::AdvectionScheme,
 ) where {N,T}
 	G, H, _, nnodes, D_m, D_p, S_m, _ = CartesianOperators.build_GHW(cap; periodic=periodic)
-	# Bulk operator C[d]: advective-form ½·diag(A·u)·(D_m+D_p).
-	# This formula has exactly zero diagonal (since (D_m+D_p)_{ii}=0), ensuring
-	# unconditional CN stability even for near-zero-volume cut cells.
+	# Bulk operator C[d]: conservative form D_p * diag(A·u) * S_m.
+	# GCL property: C[d]*1 = D_p*(A·u) at cut cells.
 	# Upwind: per-face upwind fluxes using cut face areas.
 	C = ntuple(d -> begin
 		a = cap.buf.A[d] .* uω[d]
@@ -532,15 +531,17 @@ function _advection_ops_moving(
 			a⁻ = min.(a, zero(T))
 			return spdiagm(0 => a⁺) * D_m[d] + spdiagm(0 => a⁻) * D_p[d]
 		elseif scheme isa Centered
-			# ½·diag(A·u)·(D_m+D_p): zero diagonal → CN-stable on degenerate cut cells.
-			return convert(T, 0.5) * (spdiagm(0 => a) * D_m[d] + spdiagm(0 => a) * D_p[d])
+			# D_p * diag(A·u) * S_m: conservative divergence.
+			# GCL identity: sum_d C[d]*1 + K[d]*1 = 0 for constant u.
+			return D_p[d] * spdiagm(0 => a) * S_m[d]
 		end
 		throw(ArgumentError("unknown advection scheme $(typeof(scheme))"))
 	end, N)
 	# Interface flux K[d]: GCL-consistent diagonal operator.
-	# κ_d = -(D_p[d]*A[d]) .* uγ[d] uses the discrete identity -(D_p*A[d]) = n_Γd*Γ
-	# so that κ = Γ*(n_Γ·uγ) = net interface outflow area times normal velocity.
-	# For tangential flow (n_Γ·uγ=0) or no-interface (A=const): κ=0 automatically.
+	# From the discrete divergence theorem: (D_p[d]*A[d])_i = -(n_{Γ,d}*Γ)_i.
+	# So κ_d = -(D_p[d]*A[d])·uγ[d] = (n_{Γ,d}*Γ)·uγ[d] = Γ*(n_Γ·uγ) per direction.
+	# GCL cancellation: sum_d C[d]*1 + sum_d K[d]*1 = sum_d [D_p*(A·u) - D_p*(A)*u] = 0
+	# for constant u (where D_p*(A·u) = u*D_p*A + A*D_p*u = u*D_p*A when D_p*u=0).
 	K = ntuple(d -> begin
 		κ_d = -(D_p[d] * cap.buf.A[d]) .* uγ[d]
 		spdiagm(0 => κ_d)
