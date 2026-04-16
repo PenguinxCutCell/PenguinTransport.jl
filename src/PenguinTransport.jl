@@ -525,22 +525,26 @@ function _advection_ops_moving(
 	@inbounds for d in 1:N
 		copyto!(uγflat, (d - 1) * nt + 1, uγ[d], 1, nt)
 	end
-	G, H, _, nnodes, D_m, D_p, _, S_p = CartesianOperators.build_GHW(cap; periodic=periodic)
-	activeω, _ = _cell_activity_masks(cap)
+	G, H, _, nnodes, D_m, D_p, S_m, _ = CartesianOperators.build_GHW(cap; periodic=periodic)
 	C = ntuple(d -> begin
-		a = cap.buf.A[d] .* uω[d]
 		if scheme isa Upwind1
+			a = cap.buf.A[d] .* uω[d]
 			a⁺ = max.(a, zero(T))
 			a⁻ = min.(a, zero(T))
 			return spdiagm(0 => a⁺) * D_m[d] + spdiagm(0 => a⁻) * D_p[d]
 		elseif scheme isa Centered
-			Cd = convert(T, 0.5) * (spdiagm(0 => a) * D_m[d] + spdiagm(0 => a) * D_p[d])
-			return _shift_inactive_couplings_to_diagonal!(Cd, activeω)
+			flux = S_m[d] * (cap.buf.A[d] .* uω[d])
+			C_cons = D_p[d] * spdiagm(0 => flux) * S_m[d]
+			C_adv = spdiagm(0 => uω[d]) * (convert(T, 0.5) * (D_m[d] + D_p[d]))
+			return convert(T, 0.5) * (C_cons + C_adv)
 		end
 		throw(ArgumentError("unknown advection scheme $(typeof(scheme))"))
 	end, N)
-	Htuγ = H' * uγflat
-	K = ntuple(d -> spdiagm(0 => S_p[d] * Htuγ), N)
+	K = ntuple(d -> begin
+		wd = zeros(T, N * nt)
+		copyto!(wd, (d - 1) * nt + 1, uγ[d], 1, nt)
+		H' * spdiagm(0 => wd) * H
+	end, N)
 	return AdvectionOps{N,T}(C, K, H, cap.V, nnodes)
 end
 
@@ -1299,10 +1303,20 @@ function assemble_steady_mono!(sys::LinearSystem{T}, model::TransportModelMono{N
 	# γ rows remain closure/transmission equations for interface unknowns.
 	# The advection scheme only changes how κ is split between Tω and Tγ.
 	conv_bulk = reduce(+, ops.C)
+	K_total = reduce(+, ops.K)
 	κ = _interface_flux_diag(ops)
-	κω, κγ = _split_interface_flux(κ, model.scheme)
-	A11 = conv_bulk + spdiagm(0 => κω)
-	A12 = spdiagm(0 => κγ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		A11 = conv_bulk + half * K_total
+		A12 = half * K_total
+	elseif model.scheme isa Upwind1
+		κω = max.(κ, zero(T))
+		κγ = min.(κ, zero(T))
+		A11 = conv_bulk + spdiagm(0 => κω)
+		A12 = spdiagm(0 => κγ)
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 
 	fω = _source_values(model.cap, model.source, t)
 	b1 = model.cap.V * fω
@@ -1350,21 +1364,34 @@ function assemble_steady_two_phase!(sys::LinearSystem{T}, model::TransportModelT
 	model.ops2 = ops2
 
 	conv_bulk1 = reduce(+, ops1.C)
+	K1_total = reduce(+, ops1.K)
 	κ1 = _interface_flux_diag(ops1)
-	κ1ω, κ1γ = _split_interface_flux(κ1, model.scheme)
-	# Fixed two-phase uses the static cut geometry on each phase while C is built on
-	# phase-cell values; remove the raw κ contribution from the ω diagonal so the
-	# interface transport term acts on the trace jump consistently across phases.
-	A11 = conv_bulk1 + spdiagm(0 => (κ1ω .- κ1))
-	A12 = spdiagm(0 => κ1γ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		A11 = conv_bulk1 + half * K1_total
+		A12 = half * K1_total
+	elseif model.scheme isa Upwind1
+		A11 = conv_bulk1 + spdiagm(0 => max.(κ1, zero(T)))
+		A12 = spdiagm(0 => min.(κ1, zero(T)))
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 	f1 = _source_values(model.cap1, model.source1, t)
 	b1 = model.cap1.V * f1
 
 	conv_bulk2 = reduce(+, ops2.C)
+	K2_total = reduce(+, ops2.K)
 	κ2 = _interface_flux_diag(ops2)
-	κ2ω, κ2γ = _split_interface_flux(κ2, model.scheme)
-	A33 = conv_bulk2 + spdiagm(0 => (κ2ω .- κ2))
-	A34 = spdiagm(0 => κ2γ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		A33 = conv_bulk2 + half * K2_total
+		A34 = half * K2_total
+	elseif model.scheme isa Upwind1
+		A33 = conv_bulk2 + spdiagm(0 => max.(κ2, zero(T)))
+		A34 = spdiagm(0 => min.(κ2, zero(T)))
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 	f2 = _source_values(model.cap2, model.source2, t)
 	b3 = model.cap2.V * f2
 
@@ -1685,10 +1712,18 @@ function assemble_unsteady_mono_moving!(
 	end
 
 	conv_bulk = reduce(+, ops.C)
+	Ktot_slab = reduce(+, ops.K)
 	κrel = _interface_flux_diag(ops)
-	κω, κγ = _split_interface_flux(κrel, model.scheme)
-	Adv11 = conv_bulk + spdiagm(0 => κω)
-	Adv12 = spdiagm(0 => κγ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		Adv11 = conv_bulk + half * Ktot_slab
+		Adv12 = half * Ktot_slab
+	elseif model.scheme isa Upwind1
+		Adv11 = conv_bulk + spdiagm(0 => max.(κrel, zero(T)))
+		Adv12 = spdiagm(0 => min.(κrel, zero(T)))
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 	fω = _source_values(cap, model.source, tθ)
 	A21, A22, b2 = _interface_closure_moving(model, cap, κrel, tθ)
 
@@ -1778,17 +1813,33 @@ function assemble_unsteady_two_phase_moving!(
 	ufull = _as_full_state_two_phase_moving(model, uⁿ)
 
 	conv_bulk1 = reduce(+, ops1.C)
+	K1tot_slab = reduce(+, ops1.K)
 	κ1rel = _interface_flux_diag(ops1)
-	κ1ω, κ1γ = _split_interface_flux(κ1rel, model.scheme)
-	Adv11 = conv_bulk1 + spdiagm(0 => (κ1ω .- κ1rel))
-	Adv12 = spdiagm(0 => κ1γ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		Adv11 = conv_bulk1 + half * K1tot_slab
+		Adv12 = half * K1tot_slab
+	elseif model.scheme isa Upwind1
+		Adv11 = conv_bulk1 + spdiagm(0 => max.(κ1rel, zero(T)))
+		Adv12 = spdiagm(0 => min.(κ1rel, zero(T)))
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 	f1 = _source_values(cap1, model.source1, tθ)
 
 	conv_bulk2 = reduce(+, ops2.C)
+	K2tot_slab = reduce(+, ops2.K)
 	κ2rel = _interface_flux_diag(ops2)
-	κ2ω, κ2γ = _split_interface_flux(κ2rel, model.scheme)
-	Adv33 = conv_bulk2 + spdiagm(0 => (κ2ω .- κ2rel))
-	Adv34 = spdiagm(0 => κ2γ)
+	if model.scheme isa Centered
+		half = convert(T, 0.5)
+		Adv33 = conv_bulk2 + half * K2tot_slab
+		Adv34 = half * K2tot_slab
+	elseif model.scheme isa Upwind1
+		Adv33 = conv_bulk2 + spdiagm(0 => max.(κ2rel, zero(T)))
+		Adv34 = spdiagm(0 => min.(κ2rel, zero(T)))
+	else
+		throw(ArgumentError("unknown advection scheme $(typeof(model.scheme))"))
+	end
 	f2 = _source_values(cap2, model.source2, tθ)
 
 	B21, B22, B23, B24, B41, B42, B43, B44, b2, b4 =

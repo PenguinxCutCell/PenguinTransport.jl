@@ -1784,3 +1784,5 @@ end
     @test isfinite(e1m) && e1m < 1.0
     @test isfinite(e2m) && e2m < 1.0
 end
+
+include("test_div_consistency.jl")
